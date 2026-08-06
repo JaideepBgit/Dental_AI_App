@@ -1,0 +1,22 @@
+# Rebuilt inside the image by the frontend stage.
+frontend/node_modules/
+frontend/dist/
+
+__pycache__/
+*.pyc
+.venv/
+
+# Local SQLite DB -- Postgres is the source of truth in AWS, and copying this
+# would bake patient records into the image layers.
+*.db
+
+# Runtime output; these live on the mounted volume at /data.
+xray_store/
+output_prescriptions/
+annotated/
+inbox/
+inbox_archive/
+
+samples/
+.gitignore
+README.md

@@ -1,0 +1,30 @@
+# Web API
+fastapi>=0.100.0
+uvicorn>=0.23.0
+python-multipart>=0.0.6
+
+# Detection
+ultralytics>=8.3.0
+opencv-python-headless>=4.10.0
+numpy>=1.26.0
+
+# Persistence
+SQLAlchemy>=2.0.0
+
+# Authentication: password hashing and signed session cookies.
+# bcrypt is pinned below 4.1 because passlib 1.7.4 reads bcrypt.__about__, which
+# 4.1 removed -- the combination logs a spurious error and breaks verification.
+passlib[bcrypt]>=1.7.4
+bcrypt<4.1
+itsdangerous>=2.1.0
+
+# Referral PDF generation
+reportlab>=4.0.0
+pillow>=10.0.0
+
+# RPA inbox watching (watcher.py)
+watchdog>=4.0.0
+
+# Local voice transcription. Optional: the API starts without it and the
+# frontend falls back to browser dictation. Also needs ffmpeg on PATH.
+openai-whisper>=20231117

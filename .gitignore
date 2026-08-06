@@ -1,0 +1,14 @@
+# Patient data and runtime artifacts — must never be committed.
+smileai.db
+inbox/
+inbox_archive/
+xray_store/
+annotated/
+output_prescriptions/
+*.pdf
+
+# Model weights (large binaries)
+models/*.pt
+
+__pycache__/
+*.py[cod]
