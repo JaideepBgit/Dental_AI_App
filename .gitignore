@@ -1,5 +1,7 @@
 # Patient data and runtime artifacts — must never be committed.
-smileai.db
+# Glob the db so backups and sidecars (smileai.db.bak_preauth, -wal, -shm) are
+# covered too; a bare "smileai.db" left those exposed.
+smileai.db*
 inbox/
 inbox_archive/
 xray_store/
@@ -7,8 +9,9 @@ annotated/
 output_prescriptions/
 *.pdf
 
-# Model weights (large binaries)
-models/*.pt
+# Model weights are versioned through Git LFS (see .gitattributes), so they are
+# not ignored. Clones need `git lfs install` to fetch the real files; without it
+# models/*.pt arrive as small pointer texts and inference.py fails to load them.
 
 __pycache__/
 *.py[cod]
