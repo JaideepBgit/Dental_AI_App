@@ -19,13 +19,16 @@ import SettingsIcon from '@mui/icons-material/Settings';
 import AdminIcon from '@mui/icons-material/AdminPanelSettings';
 import LogoutIcon from '@mui/icons-material/Logout';
 import MenuIcon from '@mui/icons-material/Menu';
+import CollapseIcon from '@mui/icons-material/KeyboardDoubleArrowLeft';
+import ExpandIcon from '@mui/icons-material/KeyboardDoubleArrowRight';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 
 import theme from '../theme';
-import { PRACTICE_INITIALS, PRACTICE_NAME } from '../branding';
+import { PRACTICE_NAME } from '../branding';
 import { useAuth } from '../services/AuthProvider';
 
 export const RAIL_WIDTH = 232;
+export const COLLAPSED_RAIL_WIDTH = 72;
 
 // Order matters: this is the order the rail renders and the order a new user
 // reads the product in. It follows how often a destination is used -- the
@@ -65,7 +68,7 @@ export function navItemsFor(isAdmin) {
     : NAV_ITEMS.filter((item) => item.doctor);
 }
 
-function NavList({ onNavigate, badges = {}, isAdmin = false }) {
+function NavList({ onNavigate, badges = {}, isAdmin = false, collapsed = false }) {
   const { pathname } = useLocation();
   const items = navItemsFor(isAdmin);
 
@@ -76,33 +79,38 @@ function NavList({ onNavigate, badges = {}, isAdmin = false }) {
         const active = to === '/' ? pathname === '/' : pathname.startsWith(to);
         const badge = badges[to];
 
-        return (
+        const item = (
           <ListItemButton
             key={to}
             component={NavLink}
             to={to}
             onClick={onNavigate}
             selected={active}
+            aria-label={collapsed ? label : undefined}
             sx={{
               borderRadius: 2,
               mb: 0.25,
+              px: collapsed ? 1.5 : 2,
+              justifyContent: collapsed ? 'center' : 'flex-start',
               color: active ? 'primary.main' : 'text.secondary',
               '&.Mui-selected': {
-                bgcolor: 'rgba(99, 51, 148, 0.08)',
-                '&:hover': { bgcolor: 'rgba(99, 51, 148, 0.12)' },
+                bgcolor: 'primary.light',
+                '&:hover': { bgcolor: '#dcecff' },
               },
             }}
           >
-            <ListItemIcon sx={{ minWidth: 36, color: 'inherit' }}>
+            <ListItemIcon sx={{ minWidth: collapsed ? 0 : 36, color: 'inherit', justifyContent: 'center' }}>
               <Icon fontSize="small" />
             </ListItemIcon>
-            <ListItemText
-              primary={label}
-              slotProps={{
-                primary: { variant: 'body2', fontWeight: active ? 600 : 500 },
-              }}
-            />
-            {badge > 0 && (
+            {!collapsed && (
+              <ListItemText
+                primary={label}
+                slotProps={{
+                  primary: { variant: 'body2', fontWeight: active ? 600 : 500 },
+                }}
+              />
+            )}
+            {!collapsed && badge > 0 && (
               <Chip
                 size="small"
                 label={badge}
@@ -114,27 +122,35 @@ function NavList({ onNavigate, badges = {}, isAdmin = false }) {
             )}
           </ListItemButton>
         );
+        return collapsed ? (
+          <Tooltip key={to} title={label} placement="right">
+            {item}
+          </Tooltip>
+        ) : item;
       })}
     </List>
   );
 }
 
-function Brand() {
+function Brand({ collapsed = false }) {
   return (
-    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, px: 2.5, py: 2 }}>
+    <Box
+      aria-label={collapsed ? PRACTICE_NAME : undefined}
+      sx={{ display: 'flex', alignItems: 'center', justifyContent: collapsed ? 'center' : 'flex-start', gap: 1.25, px: collapsed ? 1 : 2.25, py: 1.5 }}
+    >
       <Box
+        component="img"
+        src="/passion-dental-logo.png"
+        alt=""
         sx={{
-          width: 32, height: 32, borderRadius: '8px',
-          bgcolor: 'primary.main', color: 'common.white',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontWeight: 700, fontSize: '0.95rem', flexShrink: 0,
+          width: 38, height: 38, objectFit: 'contain', flexShrink: 0,
         }}
-      >
-        {PRACTICE_INITIALS}
-      </Box>
-      <Typography variant="h6" color="text.primary" noWrap>
-        {PRACTICE_NAME}
-      </Typography>
+      />
+      {!collapsed && (
+        <Typography variant="h6" color="primary.dark" noWrap>
+          {PRACTICE_NAME}
+        </Typography>
+      )}
     </Box>
   );
 }
@@ -164,7 +180,7 @@ function UserMenu() {
           <Avatar
             sx={{
               width: 32, height: 32, fontSize: '0.8rem', fontWeight: 600,
-              bgcolor: isAdmin ? 'secondary.main' : 'primary.main',
+              bgcolor: isAdmin ? 'primary.dark' : 'primary.main',
             }}
           >
             {initials}
@@ -203,21 +219,39 @@ function UserMenu() {
 export default function AppShell({ children, health, badges }) {
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [railCollapsed, setRailCollapsed] = useState(false);
   const { isAdmin } = useAuth();
 
   const modelInfo = health?.model;
   const unreachable = health?.status === 'unreachable';
 
   const rail = (
-    <>
-      <Brand />
+    <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      <Brand collapsed={!isMobile && railCollapsed} />
       <Divider />
-      <NavList
-        onNavigate={() => setDrawerOpen(false)}
-        badges={badges}
-        isAdmin={isAdmin}
-      />
-    </>
+      <Box sx={{ flexGrow: 1 }}>
+        <NavList
+          onNavigate={() => setDrawerOpen(false)}
+          badges={badges}
+          isAdmin={isAdmin}
+          collapsed={!isMobile && railCollapsed}
+        />
+      </Box>
+      {!isMobile && (
+        <Box sx={{ p: 1.5, borderTop: '1px solid', borderColor: 'divider' }}>
+          <Tooltip title={railCollapsed ? 'Expand navigation' : 'Collapse navigation'} placement="right">
+            <IconButton
+              size="small"
+              aria-label={railCollapsed ? 'Expand navigation' : 'Collapse navigation'}
+              onClick={() => setRailCollapsed((value) => !value)}
+              sx={{ width: '100%', borderRadius: 1 }}
+            >
+              {railCollapsed ? <ExpandIcon /> : <CollapseIcon />}
+            </IconButton>
+          </Tooltip>
+        </Box>
+      )}
+    </Box>
   );
 
   return (
@@ -235,10 +269,12 @@ export default function AppShell({ children, health, badges }) {
         <Box
           component="aside"
           sx={{
-            width: RAIL_WIDTH, flexShrink: 0,
+            width: railCollapsed ? COLLAPSED_RAIL_WIDTH : RAIL_WIDTH, flexShrink: 0,
             borderRight: '1px solid', borderColor: 'divider',
             bgcolor: 'background.paper',
             position: 'sticky', top: 0, height: '100vh',
+            transition: theme.transitions.create('width', { duration: theme.transitions.duration.shorter }),
+            overflowX: 'hidden',
           }}
         >
           {rail}

@@ -153,7 +153,7 @@ export default function UploadPage() {
                     cursor: isBusy ? 'default' : 'pointer',
                     '&:hover': isBusy ? {} : {
                       borderColor: 'primary.main',
-                      bgcolor: 'rgba(99, 51, 148, 0.03)',
+                      bgcolor: 'rgba(36, 87, 214, 0.04)',
                     },
                   }}
                 >

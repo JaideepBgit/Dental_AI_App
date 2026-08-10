@@ -10,7 +10,7 @@ import { useRef, useState } from 'react';
 import {
   Alert, Box, Button, Card, CardContent, Chip, CircularProgress, Container,
   Divider, Drawer, FormControlLabel, Grid, IconButton, Radio, RadioGroup,
-  Snackbar, Stack, Tab, Tabs, Typography, useMediaQuery,
+  Snackbar, Stack, Tab, Tabs, Tooltip, Typography, useMediaQuery,
 } from '@mui/material';
 import SaveIcon from '@mui/icons-material/Save';
 import EditNoteIcon from '@mui/icons-material/EditNote';
@@ -144,6 +144,206 @@ export default function CaseReviewPage() {
     }
   };
 
+  const reviewStatus = (
+    <>
+      {isApproved && (
+        <Alert
+          severity="success"
+          sx={{ borderRadius: 1 }}
+          action={
+            <Button
+              size="small"
+              startIcon={<PdfIcon />}
+              href={api.referralUrl(caseData.id)}
+              target="_blank"
+              rel="noopener"
+            >
+              PDF
+            </Button>
+          }
+        >
+          {prescription ? (
+            <>
+              <strong>{DECISION_LABELS[prescription.decision] || prescription.decision}</strong>
+              {' — signed by '}{prescription.clinician}
+              {prescription.location ? ` (${prescription.location})` : ''}
+              {' on '}{fmtStamp(prescription.signed_at)}.
+              {!amendsId && canPrescribe && (
+                <Box sx={{ mt: 1 }}>
+                  <Button size="small" startIcon={<EditIcon />} onClick={startAmendment}>
+                    Record an amendment
+                  </Button>
+                </Box>
+              )}
+              {amendsId && (
+                <Typography variant="caption" sx={{ mt: 0.5, display: 'block' }}>
+                  Recording an amendment. The original record is preserved.
+                </Typography>
+              )}
+            </>
+          ) : (
+            <>Signed off by {caseData.referral?.doctor_name || 'the attending dentist'}.</>
+          )}
+        </Alert>
+      )}
+
+      {!canPrescribe && (
+        <Alert severity="info" sx={{ borderRadius: 1 }}>
+          Only an orthodontist can record a clinical decision. This case is read-only.
+        </Alert>
+      )}
+
+      {canPrescribe && !isApproved && heldByColleague && (
+        <Alert severity="warning" icon={<LockIcon fontSize="small" />} sx={{ borderRadius: 1, py: 0 }}>
+          <strong>{claimedBy}</strong> holds the review lock. This case is read-only.
+        </Alert>
+      )}
+
+      {canPrescribe && !isApproved && !claimedById && (
+        <Alert severity="info" sx={{ borderRadius: 1, py: 0 }}>
+          Unclaimed. Claim this case to record a decision.
+        </Alert>
+      )}
+
+      {canPrescribe && !isApproved && claimedByMe && (
+        <Alert severity="success" icon={<LockIcon fontSize="small" />} sx={{ borderRadius: 1, py: 0 }}>
+          Review lock held by you.
+        </Alert>
+      )}
+    </>
+  );
+
+  const findingsSection = (
+    <FindingsList
+      detections={toothDetections}
+      extractionIds={extractionIds}
+      onToggle={toggleExtraction}
+      hoveredId={hoveredId}
+      onHover={setHoveredId}
+      disabled={formLocked}
+    />
+  );
+
+  const decisionSection = (
+    <Box>
+      <Typography variant="subtitle1" sx={{ mb: 1 }}>Clinical decision</Typography>
+      <RadioGroup
+        value={decision}
+        onChange={(e) => setDecision(e.target.value)}
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))' },
+          columnGap: 1,
+        }}
+      >
+        {DECISION_OPTIONS.map((opt) => (
+          <FormControlLabel
+            key={opt.value}
+            value={opt.value}
+            disabled={formLocked}
+            control={<Radio size="small" />}
+            label={
+              <Box>
+                <Typography variant="body2" sx={{ fontWeight: 500 }}>{opt.label}</Typography>
+                <Typography variant="caption" color="text.secondary">{opt.hint}</Typography>
+              </Box>
+            }
+            sx={{ alignItems: 'flex-start', m: 0, minWidth: 0 }}
+          />
+        ))}
+      </RadioGroup>
+    </Box>
+  );
+
+  const prescriptionSection = (
+    <VoiceDictator
+      text={prescriptionText}
+      setText={(next) => {
+        setPrescriptionText(next);
+        setDictationText(next);
+      }}
+      whisperReady
+      disabled={formLocked}
+      minRows={isMobile ? 3 : 10}
+      maxRows={isMobile ? 8 : 12}
+    />
+  );
+
+  const signatureSection = (
+    <Box>
+      <Typography variant="subtitle1" sx={{ mb: 1 }}>E-signature</Typography>
+      <SignaturePicker ref={signatureRef} disabled={formLocked} compact={!isMobile} />
+    </Box>
+  );
+
+  const actionSection = (
+    <Box sx={{ pt: { xs: 2, lg: 0 }, mt: { xs: 'auto', lg: 0 }, flexShrink: 0 }}>
+      {canPrescribe && !isApproved && needsClaim && (
+        <Button
+          variant="contained"
+          color="primary"
+          fullWidth
+          size="large"
+          startIcon={lockBusy ? <CircularProgress size={16} color="inherit" /> : <LockIcon />}
+          onClick={handleClaim}
+          disabled={lockBusy || loading || heldByColleague}
+          disableElevation
+          sx={{ py: 1.25 }}
+        >
+          {lockBusy ? 'Claiming…'
+            : heldByColleague ? `Under review by ${claimedBy}`
+              : 'Claim case to review'}
+        </Button>
+      )}
+
+      {canPrescribe && (!needsClaim || isApproved) && (
+        <Button
+          variant="contained"
+          color="primary"
+          fullWidth
+          size="large"
+          startIcon={saving ? <CircularProgress size={16} color="inherit" /> : <SaveIcon />}
+          onClick={handleApprove}
+          disabled={saving || loading || (isApproved && !amendsId)
+                    || (amendsId && needsClaim)}
+          disableElevation
+          sx={{ py: 1.25 }}
+        >
+          {saving ? 'Signing…'
+            : amendsId ? 'Sign amendment'
+              : isApproved ? 'Already signed'
+                : 'Sign & record decision'}
+        </Button>
+      )}
+
+      {canPrescribe && isApproved && amendsId && needsClaim && (
+        <Button
+          fullWidth
+          size="small"
+          startIcon={<LockIcon />}
+          onClick={handleClaim}
+          disabled={lockBusy || heldByColleague}
+          sx={{ mt: 1 }}
+        >
+          {heldByColleague ? `Under review by ${claimedBy}` : 'Claim to amend'}
+        </Button>
+      )}
+
+      {claimedByMe && !isApproved && (
+        <Button
+          fullWidth
+          size="small"
+          color="inherit"
+          onClick={handleRelease}
+          disabled={lockBusy || saving}
+          sx={{ mt: 1 }}
+        >
+          Release without signing
+        </Button>
+      )}
+    </Box>
+  );
+
   const notesPanel = (
     <Card
       sx={{
@@ -165,229 +365,65 @@ export default function CaseReviewPage() {
 
       <CardContent
         sx={{
-          p: 3, display: 'flex', flexDirection: 'column', flexGrow: 1,
-          minHeight: 0, overflowY: 'auto', '&:last-child': { pb: 3 },
+          p: { xs: 2.5, md: 2 }, display: 'flex', flexDirection: 'column', flexGrow: 1,
+          minHeight: 0, overflowY: 'auto', '&:last-child': { pb: { xs: 2.5, md: 2 } },
         }}
       >
-        <Stack spacing={3} sx={{ flexGrow: 1 }}>
-          {isApproved && (
-            <Alert
-              severity="success"
-              sx={{ borderRadius: 2 }}
-              action={
-                <Button
-                  size="small"
-                  startIcon={<PdfIcon />}
-                  href={api.referralUrl(caseData.id)}
-                  target="_blank"
-                  rel="noopener"
-                >
-                  PDF
-                </Button>
-              }
-            >
-              {prescription ? (
-                <>
-                  <strong>{DECISION_LABELS[prescription.decision] || prescription.decision}</strong>
-                  {' — signed by '}{prescription.clinician}
-                  {prescription.location ? ` (${prescription.location})` : ''}
-                  {' on '}{fmtStamp(prescription.signed_at)}.
-                  {!amendsId && canPrescribe && (
-                    <Box sx={{ mt: 1 }}>
-                      <Button size="small" startIcon={<EditIcon />} onClick={startAmendment}>
-                        Record an amendment
-                      </Button>
-                    </Box>
-                  )}
-                  {amendsId && (
-                    <Box sx={{ mt: 0.5 }}>
-                      <Typography variant="caption">
-                        Recording an amendment. The original record is preserved.
-                      </Typography>
-                    </Box>
-                  )}
-                </>
-              ) : (
-                <>
-                  Signed off by {caseData.referral?.doctor_name || 'the attending dentist'}.
-                </>
-              )}
-            </Alert>
-          )}
-
-          {!canPrescribe && (
-            <Alert severity="info" sx={{ borderRadius: 2 }}>
-              Only an orthodontist can record a clinical decision. You have
-              read-only access to this case.
-            </Alert>
-          )}
-
-          {/* Review lock state. The queue is shared, so who holds a case is the
-              first thing a doctor opening it needs to know. */}
-          {canPrescribe && !isApproved && heldByColleague && (
-            <Alert severity="warning" icon={<LockIcon fontSize="small" />} sx={{ borderRadius: 2 }}>
-              <strong>{claimedBy}</strong> is reviewing this case. You can read it,
-              but not sign it. It returns to the shared queue when they release or
-              sign it.
-            </Alert>
-          )}
-
-          {canPrescribe && !isApproved && !claimedById && (
-            <Alert severity="info" sx={{ borderRadius: 2 }}>
-              This case is unclaimed. Claim it to sign a decision — that also stops
-              a colleague working it at the same time.
-            </Alert>
-          )}
-
-          {canPrescribe && !isApproved && claimedByMe && (
-            <Alert severity="success" sx={{ borderRadius: 2 }}>
-              You are reviewing this case. Colleagues see it as under review until
-              you sign or release it.
-            </Alert>
-          )}
-
-          <FindingsList
-            detections={toothDetections}
-            extractionIds={extractionIds}
-            onToggle={toggleExtraction}
-            hoveredId={hoveredId}
-            onHover={setHoveredId}
-            disabled={formLocked}
-          />
-
+        <Stack spacing={2} sx={{ flexGrow: 1 }}>
+          {reviewStatus}
+          {findingsSection}
           <Divider />
-
-          <Box>
-            <Typography variant="subtitle1" sx={{ mb: 1 }}>Clinical decision</Typography>
-            <RadioGroup
-              value={decision}
-              onChange={(e) => setDecision(e.target.value)}
-            >
-              {DECISION_OPTIONS.map((opt) => (
-                <FormControlLabel
-                  key={opt.value}
-                  value={opt.value}
-                  disabled={formLocked}
-                  control={<Radio size="small" />}
-                  label={
-                    <Box>
-                      <Typography variant="body2" sx={{ fontWeight: 500 }}>
-                        {opt.label}
-                      </Typography>
-                      <Typography variant="caption" color="text.secondary">
-                        {opt.hint}
-                      </Typography>
-                    </Box>
-                  }
-                  sx={{ alignItems: 'flex-start', mb: 0.5 }}
-                />
-              ))}
-            </RadioGroup>
-          </Box>
-
+          {decisionSection}
           <Divider />
-
-          <VoiceDictator
-            text={prescriptionText}
-            setText={(next) => {
-              setPrescriptionText(next);
-              // VoiceDictator replaces the whole value on transcription; capture
-              // what it produced so the raw dictation is stored alongside the
-              // possibly-edited note.
-              setDictationText(next);
-            }}
-            whisperReady
-            disabled={formLocked}
-          />
-
-          <Box>
-            <Typography variant="subtitle1" sx={{ mb: 0.5 }}>E-signature</Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-              Sign to authorise this decision. Your name, location and the
-              signing time are recorded from your account.
-            </Typography>
-            <SignaturePicker ref={signatureRef} disabled={formLocked} />
-          </Box>
+          {prescriptionSection}
+          {signatureSection}
         </Stack>
+        <Box sx={{ pb: 'env(safe-area-inset-bottom)' }}>{actionSection}</Box>
+      </CardContent>
+    </Card>
+  );
 
-        <Box
+  const desktopReviewPanel = (
+    <Card sx={{ height: '100%' }}>
+      <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
+        <Stack spacing={2}>
+          {reviewStatus}
+          {findingsSection}
+          <Divider />
+          {decisionSection}
+        </Stack>
+      </CardContent>
+    </Card>
+  );
+
+  const desktopSignoffPanel = (
+    <Card>
+      <CardContent
+        sx={{
+          p: 2,
+          '&:last-child': { pb: 2 },
+          display: 'grid',
+          gridTemplateColumns: { md: '1fr', lg: 'minmax(0, 1.7fr) minmax(400px, 1fr)' },
+          gap: 0,
+          alignItems: 'stretch',
+        }}
+      >
+        <Box sx={{ minWidth: 0, pr: { md: 0, lg: 2 } }}>
+          {prescriptionSection}
+        </Box>
+        <Stack
+          spacing={2}
           sx={{
-            pt: 3,
-            mt: 'auto',
-            flexShrink: 0,
-            // Only in the bottom sheet: the desktop panel has no home indicator
-            // to clear, and the inset resolves to 0 there anyway.
-            ...(isMobile && { pb: 'env(safe-area-inset-bottom)' }),
+            minWidth: 0,
+            pl: { md: 0, lg: 2 }, pt: { md: 2, lg: 0 },
+            borderLeft: { md: 'none', lg: '1px solid' },
+            borderTop: { md: '1px solid', lg: 'none' },
+            borderColor: 'divider',
           }}
         >
-          {/* Claim gate. Signing requires the review lock, so the button that
-              takes it is shown in the same place the sign button would be --
-              a doctor should not fill in the form only to be refused at submit. */}
-          {canPrescribe && !isApproved && needsClaim && (
-            <Button
-              variant="contained"
-              color="primary"
-              fullWidth
-              size="large"
-              startIcon={lockBusy ? <CircularProgress size={16} color="inherit" /> : <LockIcon />}
-              onClick={handleClaim}
-              disabled={lockBusy || loading || heldByColleague}
-              disableElevation
-              sx={{ py: 1.25 }}
-            >
-              {lockBusy ? 'Claiming…'
-                : heldByColleague ? `Under review by ${claimedBy}`
-                  : 'Claim case to review'}
-            </Button>
-          )}
-
-          {canPrescribe && (!needsClaim || isApproved) && (
-            <Button
-              variant="contained"
-              color="primary"
-              fullWidth
-              size="large"
-              startIcon={saving ? <CircularProgress size={16} color="inherit" /> : <SaveIcon />}
-              onClick={handleApprove}
-              disabled={saving || loading || (isApproved && !amendsId)
-                        || (amendsId && needsClaim)}
-              disableElevation
-              sx={{ py: 1.25 }}
-            >
-              {saving ? 'Signing…'
-                : amendsId ? 'Sign amendment'
-                  : isApproved ? 'Already signed'
-                    : 'Sign & record decision'}
-            </Button>
-          )}
-
-          {/* Amending a signed case needs the lock back, since signing dropped it. */}
-          {canPrescribe && isApproved && amendsId && needsClaim && (
-            <Button
-              fullWidth
-              size="small"
-              startIcon={<LockIcon />}
-              onClick={handleClaim}
-              disabled={lockBusy || heldByColleague}
-              sx={{ mt: 1 }}
-            >
-              {heldByColleague ? `Under review by ${claimedBy}` : 'Claim to amend'}
-            </Button>
-          )}
-
-          {claimedByMe && !isApproved && (
-            <Button
-              fullWidth
-              size="small"
-              color="inherit"
-              onClick={handleRelease}
-              disabled={lockBusy || saving}
-              sx={{ mt: 1 }}
-            >
-              Release without signing
-            </Button>
-          )}
-        </Box>
+          {signatureSection}
+          {actionSection}
+        </Stack>
       </CardContent>
     </Card>
   );
@@ -457,47 +493,44 @@ export default function CaseReviewPage() {
   if (!caseData) return null;
 
   return (
-    <Container maxWidth="xl" sx={{ py: { xs: 2, md: 3 } }}>
-      <Button
-        component={RouterLink}
-        to="/queue"
-        startIcon={<BackIcon />}
-        size="small"
-        sx={{ mb: 2 }}
-      >
-        Review queue
-      </Button>
-
-      <Grid sx={{ alignItems: 'flex-start' }} container spacing={3}>
-        <Grid size={{ xs: 12, md: 7, lg: 8 }} sx={{ minWidth: 0 }}>
-          <Card sx={{ display: 'flex', flexDirection: 'column' }}>
-            <CardContent sx={{ p: { xs: 2, md: 3 }, '&:last-child': { pb: { xs: 2, md: 3 } } }}>
+    <Container maxWidth="xl" sx={{ py: 2 }}>
+      <Grid sx={{ alignItems: 'stretch' }} container spacing={{ xs: 2, lg: 2.5 }}>
+        <Grid size={{ xs: 12, md: 7, lg: 8 }} sx={{ minWidth: 0, display: 'flex' }}>
+          <Card sx={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%' }}>
+            <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
               <Stack
                 direction="row"
                 spacing={2}
-                sx={{ justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}
+                sx={{ justifyContent: 'space-between', alignItems: 'flex-start', mb: 1 }}
               >
-                <Box sx={{ minWidth: 0 }}>
-                  <Stack direction="row" spacing={1} sx={{ alignItems: 'center', mb: 0.25 }}>
-                    <Typography variant="h6" noWrap title={caseData.patient_name}>
-                      {caseData.patient_name}
+                <Stack direction="row" spacing={1} sx={{ minWidth: 0, alignItems: 'center' }}>
+                  <Tooltip title="Back to review queue">
+                    <IconButton component={RouterLink} to="/queue" size="small" aria-label="Back to review queue">
+                      <BackIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                  <Box sx={{ minWidth: 0 }}>
+                    <Stack direction="row" spacing={1} sx={{ alignItems: 'center', mb: 0.25 }}>
+                      <Typography variant="h6" noWrap title={caseData.patient_name}>
+                        {caseData.patient_name}
+                      </Typography>
+                      <StatusChip status={caseData.status} />
+                    </Stack>
+                    <Typography variant="body2" color="text.secondary" noWrap>
+                      <Box
+                        component={RouterLink}
+                        to={`/patients/${caseData.mrn}`}
+                        sx={{ color: 'inherit', textDecoration: 'none', '&:hover': { color: 'primary.main' } }}
+                      >
+                        {caseData.mrn}
+                      </Box>
+                      {' · '}{caseData.filename}
+                      {caseData.appointment_date
+                        ? ` · ${formatAppointment(caseData.appointment_date)}`
+                        : ''}
                     </Typography>
-                    <StatusChip status={caseData.status} />
-                  </Stack>
-                  <Typography variant="body2" color="text.secondary" noWrap>
-                    <Box
-                      component={RouterLink}
-                      to={`/patients/${caseData.mrn}`}
-                      sx={{ color: 'inherit', textDecoration: 'none', '&:hover': { color: 'primary.main' } }}
-                    >
-                      {caseData.mrn}
-                    </Box>
-                    {' · '}{caseData.filename}
-                    {caseData.appointment_date
-                      ? ` · ${formatAppointment(caseData.appointment_date)}`
-                      : ''}
-                  </Typography>
-                </Box>
+                  </Box>
+                </Stack>
                 {viewTab === 'detection' && toothDetections.length > 0 && (
                   <Button
                     size="small"
@@ -535,7 +568,7 @@ export default function CaseReviewPage() {
                 value={viewTab}
                 onChange={(_, v) => { setViewTab(v); setHoveredId(null); }}
                 sx={{
-                  mb: 2, minHeight: 40,
+                  mb: 1.5, minHeight: 40,
                   borderBottom: '1px solid', borderColor: 'divider',
                   '& .MuiTab-root': { minHeight: 40, py: 0 },
                 }}
@@ -689,12 +722,15 @@ export default function CaseReviewPage() {
         {!isMobile && (
           <Grid
             size={{ md: 5, lg: 4 }}
-            sx={{
-              position: 'sticky', top: 88,
-              maxHeight: 'calc(100vh - 112px)', display: 'flex', minWidth: 0,
-            }}
+            sx={{ minWidth: 0, display: 'flex' }}
           >
-            {notesPanel}
+            {desktopReviewPanel}
+          </Grid>
+        )}
+
+        {!isMobile && (
+          <Grid size={12} sx={{ minWidth: 0 }}>
+            {desktopSignoffPanel}
           </Grid>
         )}
       </Grid>

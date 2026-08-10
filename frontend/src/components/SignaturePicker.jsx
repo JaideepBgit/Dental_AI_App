@@ -21,7 +21,7 @@ import { useApi } from '../services/ApiProvider';
 
 const DRAW = '__draw__';
 
-const SignaturePicker = forwardRef(({ disabled }, ref) => {
+const SignaturePicker = forwardRef(({ disabled, compact = false }, ref) => {
   const api = useApi();
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -138,7 +138,11 @@ const SignaturePicker = forwardRef(({ disabled }, ref) => {
             direction="row"
             sx={{ justifyContent: 'space-between', alignItems: 'center', mb: 0.75 }}
           >
-            <Typography variant="body2" color="text.secondary">
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              sx={compact ? { fontSize: '0.75rem', lineHeight: 1.4 } : undefined}
+            >
               {items.length === 0
                 ? 'Sign below, or save a reusable signature in Settings.'
                 : 'Sign below for this case only.'}
@@ -161,7 +165,14 @@ const SignaturePicker = forwardRef(({ disabled }, ref) => {
             <SignaturePad ref={padRef} />
           </Box>
           {items.length === 0 && (
-            <Typography variant="caption" color="text.secondary" sx={{ mt: 0.75, display: 'block' }}>
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{
+                mt: 0.75, display: 'block',
+                ...(compact && { fontSize: '0.72rem', lineHeight: 1.4 }),
+              }}
+            >
               Tired of re-drawing?{' '}
               <Box component={RouterLink} to="/settings" sx={{ color: 'primary.main' }}>
                 Save a signature in Settings

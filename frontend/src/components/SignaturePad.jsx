@@ -42,7 +42,7 @@ const SignaturePad = forwardRef((props, ref) => {
       {width > 0 && (
         <SignatureCanvas
           ref={sigCanvas}
-          penColor="rgb(99, 51, 148)"
+          penColor="#2457d6"
           canvasProps={{
             width,
             height: CANVAS_HEIGHT,

@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { Box, Typography, CircularProgress, Chip, Stack } from '@mui/material';
+import {
+  Box, Typography, CircularProgress, Chip, Stack, IconButton, Tooltip,
+} from '@mui/material';
+import ZoomInIcon from '@mui/icons-material/ZoomIn';
+import ZoomOutIcon from '@mui/icons-material/ZoomOut';
+import FitScreenIcon from '@mui/icons-material/FitScreen';
 
 const COLOR_EXTRACT = '#ef4444';
 const COLOR_THIRD_MOLAR = '#f59e0b';
@@ -23,11 +28,16 @@ export default function Viewer({
 }) {
   const [size, setSize] = useState(null);
   const [failed, setFailed] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const [dragging, setDragging] = useState(false);
   const imgRef = useRef(null);
+  const viewportRef = useRef(null);
+  const dragRef = useRef(null);
 
   useEffect(() => {
     setSize(null);
     setFailed(false);
+    setZoom(1);
   }, [imageUrl]);
 
   const handleLoad = (e) => {
@@ -42,20 +52,109 @@ export default function Viewer({
   // one look the same on screen.
   const unit = size ? size.w / 2000 : 1;
 
+  const changeZoom = (nextZoom) => {
+    const viewport = viewportRef.current;
+    const next = Math.min(3, Math.max(1, nextZoom));
+    if (!viewport || next === zoom) return;
+
+    const centerX = (viewport.scrollLeft + viewport.clientWidth / 2) / viewport.scrollWidth;
+    const centerY = (viewport.scrollTop + viewport.clientHeight / 2) / viewport.scrollHeight;
+    setZoom(next);
+    requestAnimationFrame(() => {
+      viewport.scrollLeft = centerX * viewport.scrollWidth - viewport.clientWidth / 2;
+      viewport.scrollTop = centerY * viewport.scrollHeight - viewport.clientHeight / 2;
+    });
+  };
+
+  const fitImage = () => {
+    setZoom(1);
+    requestAnimationFrame(() => {
+      if (!viewportRef.current) return;
+      viewportRef.current.scrollLeft = 0;
+      viewportRef.current.scrollTop = 0;
+    });
+  };
+
+  const startPan = (event) => {
+    if (zoom === 1) return;
+    const viewport = viewportRef.current;
+    dragRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      left: viewport.scrollLeft,
+      top: viewport.scrollTop,
+    };
+    viewport.setPointerCapture(event.pointerId);
+    setDragging(true);
+  };
+
+  const panImage = (event) => {
+    if (!dragRef.current) return;
+    const viewport = viewportRef.current;
+    viewport.scrollLeft = dragRef.current.left - (event.clientX - dragRef.current.x);
+    viewport.scrollTop = dragRef.current.top - (event.clientY - dragRef.current.y);
+  };
+
+  const stopPan = (event) => {
+    dragRef.current = null;
+    if (viewportRef.current?.hasPointerCapture(event.pointerId)) {
+      viewportRef.current.releasePointerCapture(event.pointerId);
+    }
+    setDragging(false);
+  };
+
   return (
     <Box
       sx={{
         bgcolor: '#0f172a',
         borderRadius: 3,
         overflow: 'hidden',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        minHeight: { xs: 260, sm: 420 },
+        position: 'relative',
+        height: { xs: 260, sm: 420, lg: 460 },
         p: { xs: 1.5, md: 2 },
         boxShadow: 'inset 0px 4px 20px rgba(0,0,0,0.3)',
       }}
     >
+      <Stack
+        direction="row"
+        spacing={0.25}
+        sx={{
+          position: 'absolute', top: { xs: 18, md: 24 }, right: { xs: 18, md: 24 },
+          zIndex: 20, p: 0.25, borderRadius: 1,
+          bgcolor: 'rgba(255,255,255,0.94)', boxShadow: 1,
+        }}
+      >
+        <Tooltip title="Zoom out">
+          <span>
+            <IconButton
+              size="small"
+              aria-label="Zoom out"
+              disabled={zoom === 1}
+              onClick={() => changeZoom(zoom - 0.5)}
+            >
+              <ZoomOutIcon fontSize="small" />
+            </IconButton>
+          </span>
+        </Tooltip>
+        <Tooltip title="Fit image">
+          <IconButton size="small" aria-label="Fit image" onClick={fitImage}>
+            <FitScreenIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+        <Tooltip title="Zoom in">
+          <span>
+            <IconButton
+              size="small"
+              aria-label="Zoom in"
+              disabled={zoom === 3}
+              onClick={() => changeZoom(zoom + 0.5)}
+            >
+              <ZoomInIcon fontSize="small" />
+            </IconButton>
+          </span>
+        </Tooltip>
+      </Stack>
+
       {/*
         The radiograph is rendered as an <image> INSIDE the SVG rather than as a
         DOM <img> with the SVG absolutely positioned over it.
@@ -69,7 +168,25 @@ export default function Viewer({
         box are placed in the same viewBox units, so they cannot desynchronise
         at any container size or aspect ratio.
       */}
-      <Box sx={{ position: 'relative', width: '100%', lineHeight: 0 }}>
+      <Box
+        ref={viewportRef}
+        onPointerDown={startPan}
+        onPointerMove={panImage}
+        onPointerUp={stopPan}
+        onPointerCancel={stopPan}
+        sx={{
+          width: '100%', height: '100%', overflow: 'auto',
+          cursor: zoom === 1 ? 'default' : (dragging ? 'grabbing' : 'grab'),
+          scrollbarWidth: 'thin', touchAction: zoom === 1 ? 'auto' : 'none',
+        }}
+      >
+        <Box
+          data-testid="xray-zoom-canvas"
+          sx={{
+            position: 'relative', width: `${zoom * 100}%`, minHeight: '100%',
+            lineHeight: 0, display: 'flex', alignItems: zoom === 1 ? 'center' : 'flex-start',
+          }}
+        >
         {isAnalyzing && (
           <Box
             position="absolute"
@@ -125,12 +242,9 @@ export default function Viewer({
             sx={{
               display: 'block',
               width: '100%',
-              // Bound the height the same way the container did, and let the
-              // viewBox letterbox within it. maxHeight on the SVG is safe here
-              // because nothing else has to match its box.
-              maxHeight: { xs: '60dvh', md: '68dvh' },
               borderRadius: 1,
               overflow: 'hidden',
+              flexShrink: 0,
             }}
           >
             <image
@@ -242,6 +356,7 @@ export default function Viewer({
             })}
           </Box>
         )}
+        </Box>
       </Box>
     </Box>
   );

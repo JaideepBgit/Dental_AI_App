@@ -40,7 +40,7 @@ export default function FindingsList({
         spacing={1}
         sx={{ justifyContent: 'space-between', alignItems: 'center', mb: 1.5, minHeight: 32 }}
       >
-        <Typography variant="subtitle1">Detected teeth</Typography>
+        <Typography variant="subtitle1">Teeth for extraction</Typography>
         <ToggleButtonGroup
           size="small"
           exclusive
@@ -52,11 +52,6 @@ export default function FindingsList({
           <ToggleButton value="all">All ({detections.length})</ToggleButton>
         </ToggleButtonGroup>
       </Stack>
-
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-        Tick each tooth that requires extraction. Your selection is what appears
-        on the referral slip.
-      </Typography>
 
       {detections.length === 0 && (
         <Alert severity="info" sx={{ borderRadius: 2 }}>
@@ -83,9 +78,9 @@ export default function FindingsList({
               onMouseLeave={() => onHover?.(null)}
               sx={{
                 alignItems: 'center',
-                px: 1,
-                py: 0.5,
-                borderRadius: 2,
+                px: 0.75,
+                py: 0.375,
+                borderRadius: 1,
                 border: '1px solid',
                 borderColor: checked ? 'impacted.main' : 'divider',
                 bgcolor: checked ? 'impacted.light' : (isHovered ? '#f9fafb' : 'transparent'),
@@ -104,7 +99,12 @@ export default function FindingsList({
               />
 
               <Box sx={{ flexGrow: 1, minWidth: 0 }}>
-                <Stack sx={{ alignItems: 'center' }} direction="row" spacing={0.75}>
+                <Stack
+                  direction="row"
+                  spacing={0.75}
+                  useFlexGap
+                  sx={{ alignItems: 'center', flexWrap: 'wrap', rowGap: 0.25 }}
+                >
                   <Typography variant="body2" sx={{ fontWeight: 600 }}>
                     {det.fdi_number ? `FDI ${det.fdi_number}` : det.class_name}
                   </Typography>

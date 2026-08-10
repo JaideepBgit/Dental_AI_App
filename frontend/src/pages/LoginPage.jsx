@@ -12,7 +12,7 @@ import {
 import LoginIcon from '@mui/icons-material/Login';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 
-import { PRACTICE_INITIALS, PRACTICE_NAME, PRACTICE_TAGLINE } from '../branding';
+import { PRACTICE_NAME, PRACTICE_TAGLINE } from '../branding';
 import { useAuth } from '../services/AuthProvider';
 
 export default function LoginPage() {
@@ -65,16 +65,16 @@ export default function LoginPage() {
         <CardContent sx={{ p: { xs: 3, sm: 4 } }}>
           <Stack spacing={1} alignItems="center" sx={{ mb: 3 }}>
             <Box
+              component="img"
+              src="/passion-dental-logo.png"
+              alt="Passion Dental"
               sx={{
-                width: 44, height: 44, borderRadius: '10px',
-                bgcolor: 'primary.main', color: 'common.white',
-                display: 'grid', placeItems: 'center',
-                fontWeight: 700, fontSize: '1.2rem',
+                width: 76, height: 76, objectFit: 'contain',
               }}
-            >
-              {PRACTICE_INITIALS}
-            </Box>
-            <Typography variant="h5" sx={{ fontWeight: 600 }}>{PRACTICE_NAME}</Typography>
+            />
+            <Typography variant="h5" sx={{ fontWeight: 600, color: 'primary.dark' }}>
+              {PRACTICE_NAME}
+            </Typography>
             <Typography variant="body2" color="text.secondary">
               {PRACTICE_TAGLINE}
             </Typography>

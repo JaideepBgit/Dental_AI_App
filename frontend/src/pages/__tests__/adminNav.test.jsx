@@ -70,6 +70,20 @@ describe('nav rail order', () => {
     expect(within(nav).queryByRole('link', { name: /^patients/i })).toBeNull();
     expect(within(nav).queryByRole('link', { name: /^referrals/i })).toBeNull();
   });
+
+  it('collapses to labelled icon navigation and expands again', async () => {
+    const user = userEvent.setup();
+    renderApp({ route: '/' });
+
+    await user.click(await screen.findByRole('button', { name: /collapse navigation/i }));
+
+    expect(screen.getByRole('button', { name: /expand navigation/i })).toBeInTheDocument();
+    expect(within(screen.getByRole('navigation')).getByRole('link', { name: 'Review Queue' }))
+      .toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /expand navigation/i }));
+    expect(screen.getByRole('button', { name: /collapse navigation/i })).toBeInTheDocument();
+  });
 });
 
 describe('Administration tabs', () => {

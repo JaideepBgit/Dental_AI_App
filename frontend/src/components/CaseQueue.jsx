@@ -46,8 +46,8 @@ export default function CaseQueue({
           flexDirection: 'column',
           gap: 0.5,
           '&.Mui-selected': {
-            bgcolor: 'rgba(99, 51, 148, 0.08)',
-            '&:hover': { bgcolor: 'rgba(99, 51, 148, 0.12)' },
+            bgcolor: 'primary.light',
+            '&:hover': { bgcolor: '#dcecff' },
           },
         }}
       >

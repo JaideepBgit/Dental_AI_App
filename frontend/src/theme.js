@@ -2,30 +2,34 @@ import { createTheme } from '@mui/material/styles';
 
 const theme = createTheme({
     typography: {
-        fontFamily: '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-        h6: { fontWeight: 600, letterSpacing: '-0.02em' },
-        subtitle1: { fontWeight: 600, letterSpacing: '-0.01em' },
-        subtitle2: { fontWeight: 500, letterSpacing: '-0.01em' },
-        body2: { letterSpacing: '0em' }
+        fontFamily: '"Avenir Next", Avenir, "Segoe UI", Arial, sans-serif',
+        h6: { fontWeight: 600, letterSpacing: 0 },
+        subtitle1: { fontWeight: 600, letterSpacing: 0 },
+        subtitle2: { fontWeight: 500, letterSpacing: 0 },
+        body2: { letterSpacing: 0 }
     },
     palette: {
         primary: {
-            main: 'rgb(99, 51, 148)',
+            light: '#eaf4ff',
+            main: '#2457d6',
+            dark: '#173f9f',
             contrastText: '#ffffff',
         },
         secondary: {
-            main: '#f3f4f6', // soft grey
-            contrastText: '#111827', // dark text
+            light: '#e9f9ff',
+            main: '#27afe0',
+            dark: '#087da9',
+            contrastText: '#ffffff',
         },
         background: {
-            default: '#fafafa',
+            default: '#f6f9fc',
             paper: '#ffffff',
         },
         text: {
-            primary: '#111827', // Crisp dark grey
-            secondary: '#6b7280' // Muted grey
+            primary: '#20344d',
+            secondary: '#65758a'
         },
-        divider: '#e5e7eb', // subtle borders
+        divider: '#dce6f0',
         // Semantic colors (muted/pastel versions for badges)
         healthy: { main: '#10b981', light: '#d1fae5' },
         caries: { main: '#f59e0b', light: '#fef3c7' },
@@ -37,7 +41,7 @@ const theme = createTheme({
                 root: {
                     textTransform: 'none',
                     fontWeight: 500,
-                    borderRadius: '8px',
+                    borderRadius: '6px',
                     boxShadow: 'none',
                     '&:hover': {
                         boxShadow: 'none',
@@ -45,15 +49,15 @@ const theme = createTheme({
                 },
                 containedPrimary: {
                     '&:hover': {
-                        backgroundColor: 'rgba(99, 51, 148, 0.9)', 
+                        backgroundColor: '#173f9f',
                     },
                 },
                 outlined: {
-                    borderColor: '#e5e7eb',
-                    color: '#374151',
+                    borderColor: '#ccd9e7',
+                    color: '#40556d',
                     '&:hover': {
-                        backgroundColor: '#f9fafb',
-                        borderColor: '#d1d5db',
+                        backgroundColor: '#f2f7fc',
+                        borderColor: '#9eb4ca',
                     }
                 }
             },
@@ -61,9 +65,9 @@ const theme = createTheme({
         MuiCard: {
             styleOverrides: {
                 root: {
-                    borderRadius: '16px',
-                    boxShadow: 'none', // Flat design
-                    border: '1px solid #e5e7eb', // Delicate border
+                    borderRadius: '8px',
+                    boxShadow: 'none',
+                    border: '1px solid #dce6f0',
                 }
             }
         },
@@ -78,9 +82,9 @@ const theme = createTheme({
             styleOverrides: {
                 root: {
                     backgroundColor: '#ffffff',
-                    color: '#111827',
+                    color: '#20344d',
                     boxShadow: 'none',
-                    borderBottom: '1px solid #e5e7eb',
+                    borderBottom: '1px solid #dce6f0',
                 }
             }
         },
@@ -88,16 +92,16 @@ const theme = createTheme({
             styleOverrides: {
                 root: {
                     '& .MuiOutlinedInput-root': {
-                        borderRadius: '12px',
-                        backgroundColor: '#f9fafb',
+                        borderRadius: '8px',
+                        backgroundColor: '#f8fbfe',
                         '& fieldset': {
-                            borderColor: '#e5e7eb',
+                            borderColor: '#d5e1ec',
                         },
                         '&:hover fieldset': {
-                            borderColor: '#d1d5db',
+                            borderColor: '#a9bdcf',
                         },
                         '&.Mui-focused fieldset': {
-                            borderColor: 'rgb(99, 51, 148)',
+                            borderColor: '#2457d6',
                         },
                     }
                 }
