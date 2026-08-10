@@ -16,7 +16,12 @@ import { Link as RouterLink } from 'react-router-dom';
 import { useApi } from '../services/ApiProvider';
 import PageHeader from '../components/PageHeader';
 
-export default function ReferralsPage() {
+/**
+ * `embedded` renders this as a panel inside the Administration tabs, where the
+ * tab already names the section and the outer page supplies the padding. A
+ * doctor still gets it as a page of its own from their nav rail.
+ */
+export default function ReferralsPage({ embedded = false }) {
   const api = useApi();
   const [items, setItems] = useState([]);
   const [search, setSearch] = useState('');
@@ -35,26 +40,39 @@ export default function ReferralsPage() {
     return () => { cancelled = true; clearTimeout(timer); };
   }, [api, search]);
 
+  const searchField = (
+    <TextField
+      size="small"
+      placeholder="Search by dentist"
+      value={search}
+      onChange={(e) => setSearch(e.target.value)}
+      slotProps={{
+        input: {
+          startAdornment: <SearchIcon fontSize="small" sx={{ mr: 1, color: 'text.secondary' }} />,
+        },
+      }}
+      sx={{ minWidth: 260 }}
+    />
+  );
+
+  const Frame = embedded ? Box : Container;
+  const frameProps = embedded
+    ? {}
+    : { maxWidth: 'lg', sx: { py: { xs: 2, md: 4 } } };
+
   return (
-    <Container maxWidth="lg" sx={{ py: { xs: 2, md: 4 } }}>
-      <PageHeader
-        title="Referrals"
-        subtitle="Signed referral slips, newest first."
-        action={
-          <TextField
-            size="small"
-            placeholder="Search by dentist"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            slotProps={{
-              input: {
-                startAdornment: <SearchIcon fontSize="small" sx={{ mr: 1, color: 'text.secondary' }} />,
-              },
-            }}
-            sx={{ minWidth: 260 }}
-          />
-        }
-      />
+    <Frame {...frameProps}>
+      {embedded ? (
+        <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 2 }}>
+          {searchField}
+        </Box>
+      ) : (
+        <PageHeader
+          title="Referrals"
+          subtitle="Signed referral slips, newest first."
+          action={searchField}
+        />
+      )}
 
       {error && <Alert severity="error" sx={{ mb: 2.5, borderRadius: 2 }}>{error}</Alert>}
 
@@ -117,6 +135,6 @@ export default function ReferralsPage() {
           </Box>
         )}
       </Card>
-    </Container>
+    </Frame>
   );
 }

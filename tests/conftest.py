@@ -72,17 +72,70 @@ def app_env(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
 
-    # db and main read their env vars at import time. Drop them so the next
-    # import picks up the values above instead of a cached engine.
-    for module in ("main", "db"):
+    # Pin the session secret. auth.py generates a random one when this is unset,
+    # and it is regenerated on every module reload below -- which silently
+    # invalidates the cookie any already-signed-in TestClient is holding, so a
+    # second client in the same test would start 401ing mid-run.
+    monkeypatch.setenv("SESSION_SECRET_KEY", "test-only-fixed-secret-do-not-ship")
+
+    # db, main and auth read their env vars at import time. Drop them so the next
+    # import picks up the values above instead of a cached engine. auth is
+    # included because it caches the secret and the password context.
+    for module in ("main", "db", "auth"):
         sys.modules.pop(module, None)
 
     return tmp_path
 
 
+# ---------------------------------------------------------------------------
+# Authentication
+#
+# Every /api route except /api/health and /api/login requires a session cookie.
+# `anon_api` stays signed out so a test can assert a 401; every other client
+# fixture arrives already authenticated.
+# ---------------------------------------------------------------------------
+
+TEST_PASSWORD = "TestPassw0rd!x"
+
+
+def _make_user(client, email, role, full_name):
+    """Insert an active user directly, hashing the password the way login expects."""
+    from auth import hash_password
+
+    db = client.db_module.SessionLocal()
+    try:
+        existing = (db.query(client.db_module.User)
+                    .filter(client.db_module.User.email == email).first())
+        if existing:
+            return existing.id
+        user = client.db_module.User(
+            email=email,
+            password_hash=hash_password(TEST_PASSWORD),
+            full_name=full_name,
+            role=role,
+            is_active=True,
+        )
+        db.add(user)
+        db.commit()
+        return user.id
+    finally:
+        db.close()
+
+
+def _sign_in(client, email):
+    """Log the client in, leaving the session cookie on its cookie jar."""
+    resp = client.post("/api/login", data={"email": email, "password": TEST_PASSWORD})
+    assert resp.status_code == 200, f"login failed for {email}: {resp.text}"
+    return resp
+
+
 @pytest.fixture
-def api(app_env):
-    """A TestClient bound to a freshly-initialised empty database."""
+def anon_api(app_env):
+    """
+    A signed-OUT TestClient, for asserting that endpoints require authentication.
+
+    Every /api route except /api/health and /api/login returns 401 here.
+    """
     from fastapi.testclient import TestClient
 
     import db as db_module
@@ -91,10 +144,23 @@ def api(app_env):
     db_module.init_db()
 
     with TestClient(main_module.app) as client:
-        # Tests reach for these to seed rows and to patch module internals.
         client.db_module = db_module
         client.main_module = main_module
         yield client
+
+
+@pytest.fixture
+def api(anon_api):
+    """
+    The default client, signed in as an ADMIN.
+
+    Admin because that is the role the endpoints most tests exercise belong to --
+    upload, delete, the practice-wide queue. Use `anon_api` to assert a 401, and
+    `doctor_api` for anything role-scoped to a clinician.
+    """
+    _make_user(anon_api, "admin@test.local", anon_api.db_module.ROLE_ADMIN, "Test Admin")
+    _sign_in(anon_api, "admin@test.local")
+    return anon_api
 
 
 @pytest.fixture
@@ -105,6 +171,49 @@ def session(api):
         yield db
     finally:
         db.close()
+
+
+@pytest.fixture
+def admin_api(api):
+    """Alias for `api`, which is already an admin. Reads clearly at call sites."""
+    return api
+
+
+@pytest.fixture
+def doctor_api(api):
+    """
+    A SECOND client signed in as an orthodontist.
+
+    A separate TestClient, not the `api` fixture re-authenticated: the shared-queue
+    and review-lock tests need an admin and a doctor holding sessions at the same
+    time, which one cookie jar cannot represent. Both clients talk to the same app
+    and database.
+    """
+    from fastapi.testclient import TestClient
+
+    uid = _make_user(api, "doctor@test.local",
+                     api.db_module.ROLE_ORTHODONTIST, "Dr Test Ortho")
+    client = TestClient(api.main_module.app)
+    client.db_module = api.db_module
+    client.main_module = api.main_module
+    client.user_id = uid
+    _sign_in(client, "doctor@test.local")
+    return client
+
+
+@pytest.fixture
+def second_doctor_api(api):
+    """Another orthodontist, for the colleague side of a review-lock conflict."""
+    from fastapi.testclient import TestClient
+
+    uid = _make_user(api, "doctor2@test.local",
+                     api.db_module.ROLE_ORTHODONTIST, "Dr Second Ortho")
+    client = TestClient(api.main_module.app)
+    client.db_module = api.db_module
+    client.main_module = api.main_module
+    client.user_id = uid
+    _sign_in(client, "doctor2@test.local")
+    return client
 
 
 @pytest.fixture

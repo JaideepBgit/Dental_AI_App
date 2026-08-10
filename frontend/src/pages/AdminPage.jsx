@@ -1,5 +1,13 @@
 /**
- * Practice administration: orthodontists, locations, and the activity log.
+ * Practice administration: orthodontists, locations, patients, referrals and
+ * the activity log, split across tabs.
+ *
+ * Patients and Referrals are the practice's records rather than daily
+ * destinations, so they live here as tabs instead of taking a nav rail slot
+ * each. The pages themselves are reused as-is -- this file only frames them.
+ *
+ * The active tab is the URL (`/admin/patients`), not component state, so a tab
+ * can be linked, bookmarked, and reached with the browser's back button.
  *
  * Admin-only. Users are deactivated rather than deleted so past sign-offs always
  * resolve to the clinician who made them.
@@ -8,8 +16,8 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   Alert, Box, Button, Chip, CircularProgress, Dialog, DialogActions,
   DialogContent, DialogContentText, DialogTitle, IconButton, MenuItem, Paper,
-  Snackbar, Stack, Table, TableBody, TableCell, TableContainer, TableHead,
-  TableRow, TextField, Tooltip, Typography,
+  Snackbar, Stack, Tab, Table, TableBody, TableCell, TableContainer, TableHead,
+  TableRow, Tabs, TextField, Tooltip, Typography,
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import BlockIcon from '@mui/icons-material/Block';
@@ -17,10 +25,32 @@ import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import KeyIcon from '@mui/icons-material/Key';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import SaveIcon from '@mui/icons-material/Save';
+import { useNavigate, useParams } from 'react-router-dom';
 
 import PageHeader from '../components/PageHeader';
+import PatientsPage from './PatientsPage';
+import ReferralsPage from './ReferralsPage';
 import { useApi } from '../services/ApiProvider';
 import { useAuth } from '../services/AuthProvider';
+
+/**
+ * Tab order is the order an admin needs them: the people who use the system,
+ * then the records they produce, then the log of what happened.
+ *
+ * `slug` is the URL segment. The first tab is the bare `/admin`, so its slug is
+ * empty and anything unrecognised falls back to it.
+ */
+const TABS = [
+  { slug: '', label: 'Users & Locations' },
+  { slug: 'patients', label: 'Patients' },
+  { slug: 'referrals', label: 'Referrals' },
+  { slug: 'activity', label: 'Activity' },
+];
+
+function tabIndexFor(slug) {
+  const found = TABS.findIndex((t) => t.slug === (slug || ''));
+  return found === -1 ? 0 : found;
+}
 
 const ROLES = [
   { value: 'ORTHODONTIST', label: 'Orthodontist' },
@@ -36,13 +66,68 @@ function fmt(iso) {
   return iso.replace('T', ' ').replace(/\.\d+$/, '').slice(0, 16);
 }
 
+/**
+ * The tab frame. Only the selected panel is mounted, so switching to Patients
+ * is what triggers its fetch -- nothing loads records the admin never opens.
+ */
 export default function AdminPage() {
+  const { tab } = useParams();
+  const navigate = useNavigate();
+  const current = tabIndexFor(tab);
+
+  return (
+    <Box sx={{ p: { xs: 2, md: 3 } }}>
+      <PageHeader
+        title="Administration"
+        subtitle="Orthodontists, locations, patient records and practice activity."
+      />
+
+      <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 3 }}>
+        <Tabs
+          value={current}
+          onChange={(_, next) => {
+            const { slug } = TABS[next];
+            navigate(slug ? `/admin/${slug}` : '/admin');
+          }}
+          variant="scrollable"
+          scrollButtons="auto"
+          allowScrollButtonsMobile
+          aria-label="Administration sections"
+        >
+          {TABS.map((t) => (
+            <Tab
+              key={t.label}
+              label={t.label}
+              id={`admin-tab-${t.slug || 'users'}`}
+              aria-controls={`admin-panel-${t.slug || 'users'}`}
+              sx={{ textTransform: 'none', fontWeight: 500 }}
+            />
+          ))}
+        </Tabs>
+      </Box>
+
+      <Box
+        role="tabpanel"
+        id={`admin-panel-${TABS[current].slug || 'users'}`}
+        aria-labelledby={`admin-tab-${TABS[current].slug || 'users'}`}
+      >
+        {current === 0 && <PracticePanel />}
+        {/* Both pages drop their own header: the tab already names the panel. */}
+        {current === 1 && <PatientsPage embedded />}
+        {current === 2 && <ReferralsPage embedded />}
+        {current === 3 && <ActivityPanel />}
+      </Box>
+    </Box>
+  );
+}
+
+/** Orthodontists and locations -- who can sign in, and where they work. */
+function PracticePanel() {
   const api = useApi();
   const { user: me } = useAuth();
 
   const [users, setUsers] = useState([]);
   const [locations, setLocations] = useState([]);
-  const [audit, setAudit] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
@@ -58,12 +143,9 @@ export default function AdminPage() {
     setLoading(true);
     setError('');
     try {
-      const [u, l, a] = await Promise.all([
-        api.fetchUsers(), api.fetchLocations(), api.fetchAuditLog(150),
-      ]);
+      const [u, l] = await Promise.all([api.fetchUsers(), api.fetchLocations()]);
       setUsers(u);
       setLocations(l);
-      setAudit(a);
       setEdits({});
     } catch (err) {
       setError(err.message);
@@ -91,12 +173,7 @@ export default function AdminPage() {
   const activeLocations = locations.filter((l) => l.is_active);
 
   return (
-    <Box sx={{ p: { xs: 2, md: 3 } }}>
-      <PageHeader
-        title="Administration"
-        subtitle="Manage orthodontists, locations and review practice activity."
-      />
-
+    <Box>
       {error && (
         <Alert severity="error" onClose={() => setError('')} sx={{ mb: 2 }}>
           {error}
@@ -111,8 +188,13 @@ export default function AdminPage() {
         <Stack spacing={3}>
           {/* ---------------- orthodontists ---------------- */}
           <Paper variant="outlined">
+            {/* space-between alone only separates these while the row has slack;
+                once it is tight the heading and button meet. spacing keeps a
+                floor under the gap, and the button holds its width so the label
+                wraps rather than the control squashing. */}
             <Stack
               direction="row" alignItems="center" justifyContent="space-between"
+              spacing={2}
               sx={{ p: 2, pb: 1 }}
             >
               <Typography variant="h6">Orthodontists</Typography>
@@ -122,6 +204,7 @@ export default function AdminPage() {
                 size="small"
                 disableElevation
                 onClick={() => setShowAdd((v) => !v)}
+                sx={{ flexShrink: 0 }}
               >
                 Add orthodontist
               </Button>
@@ -199,8 +282,10 @@ export default function AdminPage() {
               </Box>
             )}
 
-            <TableContainer>
-              <Table size="small">
+            {/* The row carries two editable fields and three actions, so it has a
+                floor well past a phone's width -- scroll the table, not the page. */}
+            <TableContainer sx={{ overflowX: 'auto' }}>
+              <Table size="small" sx={{ minWidth: 860 }}>
                 <TableHead>
                   <TableRow>
                     <TableCell>Name</TableCell>
@@ -341,8 +426,8 @@ export default function AdminPage() {
                 </Button>
               </Stack>
             </Box>
-            <TableContainer>
-              <Table size="small">
+            <TableContainer sx={{ overflowX: 'auto' }}>
+              <Table size="small" sx={{ minWidth: 420 }}>
                 <TableHead>
                   <TableRow>
                     <TableCell>Name</TableCell>
@@ -389,67 +474,6 @@ export default function AdminPage() {
             </TableContainer>
           </Paper>
 
-          {/* ---------------- activity ---------------- */}
-          <Paper variant="outlined">
-            <Stack
-              direction="row" alignItems="center" justifyContent="space-between"
-              sx={{ p: 2, pb: 1 }}
-            >
-              <Typography variant="h6">Activity log</Typography>
-              <Button startIcon={<RefreshIcon />} size="small" onClick={load}>
-                Refresh
-              </Button>
-            </Stack>
-            <TableContainer sx={{ maxHeight: 420 }}>
-              <Table size="small" stickyHeader>
-                <TableHead>
-                  <TableRow>
-                    <TableCell>When</TableCell>
-                    <TableCell>Who</TableCell>
-                    <TableCell>Action</TableCell>
-                    <TableCell>Target</TableCell>
-                    <TableCell>Detail</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {audit.map((r, i) => (
-                    <TableRow key={i}>
-                      <TableCell sx={{ whiteSpace: 'nowrap' }}>
-                        <Typography variant="caption" color="text.secondary">
-                          {fmt(r.at)}
-                        </Typography>
-                      </TableCell>
-                      <TableCell>{r.actor || '—'}</TableCell>
-                      <TableCell>
-                        <Typography variant="caption" sx={{ fontFamily: 'monospace' }}>
-                          {r.action}
-                        </Typography>
-                      </TableCell>
-                      <TableCell>
-                        <Typography variant="caption" color="text.secondary">
-                          {r.target || '—'}
-                        </Typography>
-                      </TableCell>
-                      <TableCell>
-                        <Typography variant="caption" color="text.secondary">
-                          {r.detail || ''}
-                        </Typography>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                  {audit.length === 0 && (
-                    <TableRow>
-                      <TableCell colSpan={5}>
-                        <Typography variant="body2" color="text.secondary">
-                          No activity recorded yet.
-                        </Typography>
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          </Paper>
         </Stack>
       )}
 
@@ -470,6 +494,108 @@ export default function AdminPage() {
         message={toast}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
       />
+    </Box>
+  );
+}
+
+/** The audit trail: who did what, newest first. Read-only by design. */
+function ActivityPanel() {
+  const api = useApi();
+  const [audit, setAudit] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const load = useCallback(() => {
+    setLoading(true);
+    setError('');
+    api.fetchAuditLog(150)
+      .then(setAudit)
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false));
+  }, [api]);
+
+  useEffect(() => { load(); }, [load]);
+
+  return (
+    <Box>
+      {error && (
+        <Alert severity="error" onClose={() => setError('')} sx={{ mb: 2 }}>
+          {error}
+        </Alert>
+      )}
+
+      <Paper variant="outlined">
+        <Stack
+          direction="row" alignItems="center" justifyContent="space-between"
+          spacing={2}
+          sx={{ p: 2, pb: 1 }}
+        >
+          <Typography variant="h6">Activity log</Typography>
+          <Button
+            startIcon={<RefreshIcon />}
+            size="small"
+            onClick={load}
+            sx={{ flexShrink: 0 }}
+          >
+            Refresh
+          </Button>
+        </Stack>
+        {loading ? (
+          <Box sx={{ display: 'grid', placeItems: 'center', py: 8 }}>
+            <CircularProgress />
+          </Box>
+        ) : (
+          <TableContainer sx={{ maxHeight: 520, overflowX: 'auto' }}>
+            <Table size="small" stickyHeader sx={{ minWidth: 720 }}>
+              <TableHead>
+                <TableRow>
+                  <TableCell>When</TableCell>
+                  <TableCell>Who</TableCell>
+                  <TableCell>Action</TableCell>
+                  <TableCell>Target</TableCell>
+                  <TableCell>Detail</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {audit.map((r, i) => (
+                  <TableRow key={i}>
+                    <TableCell sx={{ whiteSpace: 'nowrap' }}>
+                      <Typography variant="caption" color="text.secondary">
+                        {fmt(r.at)}
+                      </Typography>
+                    </TableCell>
+                    <TableCell>{r.actor || '—'}</TableCell>
+                    <TableCell>
+                      <Typography variant="caption" sx={{ fontFamily: 'monospace' }}>
+                        {r.action}
+                      </Typography>
+                    </TableCell>
+                    <TableCell>
+                      <Typography variant="caption" color="text.secondary">
+                        {r.target || '—'}
+                      </Typography>
+                    </TableCell>
+                    <TableCell>
+                      <Typography variant="caption" color="text.secondary">
+                        {r.detail || ''}
+                      </Typography>
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {audit.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={5}>
+                      <Typography variant="body2" color="text.secondary">
+                        No activity recorded yet.
+                      </Typography>
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        )}
+      </Paper>
     </Box>
   );
 }

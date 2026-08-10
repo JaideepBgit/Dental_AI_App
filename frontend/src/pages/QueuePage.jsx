@@ -17,6 +17,8 @@ import SearchIcon from '@mui/icons-material/Search';
 import RetryIcon from '@mui/icons-material/Replay';
 import NewCaseIcon from '@mui/icons-material/AddPhotoAlternate';
 import DeleteIcon from '@mui/icons-material/DeleteOutlined';
+import LockIcon from '@mui/icons-material/LockOutlined';
+import LockOpenIcon from '@mui/icons-material/LockOpenOutlined';
 import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 
@@ -38,11 +40,38 @@ const FILTERS = [
 
 export default function QueuePage() {
   const api = useApi();
-  const { isAdmin } = useAuth();
+  const { isAdmin, isOrthodontist } = useAuth();
   const {
     items, loading, error, status, setStatus, search, setSearch, refresh, retry, remove,
     assigned, setAssigned,
   } = useCases({ api });
+
+  // Review locks. `lockBusyId` disables just the row being claimed or released,
+  // so the rest of the table stays usable while one request is in flight.
+  const [lockBusyId, setLockBusyId] = useState(null);
+  const [lockError, setLockError] = useState(null);
+
+  /** Claim a case for review, or release it back to the shared queue. */
+  async function toggleLock(item, action) {
+    setLockError(null);
+    setLockBusyId(item.id);
+    try {
+      if (action === 'claim') {
+        await api.claimXray(item.id);
+        setAssignToast(`${item.patient_name} is now under your review.`);
+      } else {
+        await api.releaseXray(item.id);
+        setAssignToast(`${item.patient_name} returned to the shared queue.`);
+      }
+      await refresh();
+    } catch (err) {
+      setLockError(err.message);
+      // A lost race leaves the row stale, so pull fresh state either way.
+      await refresh();
+    } finally {
+      setLockBusyId(null);
+    }
+  }
 
   // The case the delete dialog is currently asking about, if any.
   const [pendingDelete, setPendingDelete] = useState(null);
@@ -203,8 +232,8 @@ export default function QueuePage() {
       <PageHeader
         title="Review Queue"
         subtitle={isAdmin
-          ? "Every case in the practice. Assign each one to an orthodontist."
-          : "Cases assigned to you, soonest appointment first."}
+          ? "Every case in the practice. Doctors claim their own; assign one only when it must go to a specific orthodontist."
+          : "The shared queue, soonest appointment first. Claim a case to review it."}
         action={
           <Stack direction="row" spacing={1}>
             {/* Intake is an admin action; a doctor works what they are given. */}
@@ -287,6 +316,12 @@ export default function QueuePage() {
           {assignError}
         </Alert>
       )}
+      {lockError && (
+        <Alert severity="warning" sx={{ mb: 2.5, borderRadius: 2 }}
+               onClose={() => setLockError(null)}>
+          {lockError}
+        </Alert>
+      )}
 
       {/* Bulk bar: appears only once rows are ticked, so it never takes up space
           during ordinary browsing. */}
@@ -343,14 +378,14 @@ export default function QueuePage() {
           <Box sx={{ px: 3, py: 8, textAlign: 'center' }}>
             <Typography variant="subtitle1" sx={{ mb: 0.5 }}>
               {isFiltered ? 'No cases match this filter'
-                : isAdmin ? 'No cases yet' : 'Nothing assigned to you'}
+                : isAdmin ? 'No cases yet' : 'No cases waiting'}
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
               {isFiltered
                 ? 'Try a different status or clear the search.'
                 : isAdmin
                   ? 'Radiographs dropped into the inbox folder appear here automatically.'
-                  : 'Your queue is clear. An administrator assigns cases to you.'}
+                  : 'The shared queue is clear. New cases appear here for any doctor to claim.'}
             </Typography>
             {isFiltered ? (
               <Button
@@ -387,6 +422,7 @@ export default function QueuePage() {
                   <TableCell>MRN</TableCell>
                   <TableCell>Appointment</TableCell>
                   <TableCell>Status</TableCell>
+                  <TableCell>Review</TableCell>
                   {isAdmin && <TableCell>Assigned to</TableCell>}
                   <TableCell align="right">Teeth</TableCell>
                   <TableCell>Findings</TableCell>
@@ -439,6 +475,37 @@ export default function QueuePage() {
                     </TableCell>
                     <TableCell>
                       <StatusChip status={item.status} title={item.error_message} />
+                    </TableCell>
+                    {/* Who holds the review lock. On a shared queue this is what
+                        tells a doctor whether a case is theirs to pick up. */}
+                    <TableCell sx={{ minWidth: 150 }}>
+                      {item.status === 'APPROVED' ? (
+                        <Typography variant="caption" color="text.secondary">—</Typography>
+                      ) : item.claimed_by_me ? (
+                        <Chip
+                          size="small"
+                          icon={<LockIcon sx={{ fontSize: 14 }} />}
+                          label="You"
+                          color="primary"
+                          sx={{ height: 22, fontSize: '0.7rem' }}
+                        />
+                      ) : item.claimed_by ? (
+                        <Tooltip title={`Under review by ${item.claimed_by}`}>
+                          <Chip
+                            size="small"
+                            icon={<LockIcon sx={{ fontSize: 14 }} />}
+                            label={item.claimed_by}
+                            sx={{
+                              height: 22, fontSize: '0.7rem', maxWidth: 140,
+                              bgcolor: 'caries.light', color: '#92400e',
+                            }}
+                          />
+                        </Tooltip>
+                      ) : (
+                        <Typography variant="caption" color="text.secondary">
+                          Unclaimed
+                        </Typography>
+                      )}
                     </TableCell>
                     {isAdmin && (
                       <TableCell sx={{ minWidth: 240 }}>
@@ -536,8 +603,74 @@ export default function QueuePage() {
                             Retry
                           </Button>
                         )}
+
+                        {/* Claim / release, straight from the queue so a doctor can
+                            pick up work without opening each case first.
+                            `blocked_reason` is computed server-side. */}
+                        {isOrthodontist && item.status !== 'APPROVED' && (
+                          item.claimed_by_me ? (
+                            <Tooltip title="Return this case to the shared queue">
+                              <span>
+                                <Button
+                                  size="small"
+                                  color="inherit"
+                                  startIcon={lockBusyId === item.id
+                                    ? <CircularProgress size={13} />
+                                    : <LockOpenIcon fontSize="small" />}
+                                  onClick={() => toggleLock(item, 'release')}
+                                  disabled={lockBusyId === item.id}
+                                >
+                                  Release
+                                </Button>
+                              </span>
+                            </Tooltip>
+                          ) : (
+                            <Tooltip title={item.blocked_reason || 'Claim this case to review it'}>
+                              <span>
+                                <Button
+                                  size="small"
+                                  startIcon={lockBusyId === item.id
+                                    ? <CircularProgress size={13} />
+                                    : <LockIcon fontSize="small" />}
+                                  onClick={() => toggleLock(item, 'claim')}
+                                  disabled={lockBusyId === item.id || Boolean(item.blocked_reason)}
+                                >
+                                  Claim
+                                </Button>
+                              </span>
+                            </Tooltip>
+                          )
+                        )}
+
+                        {/* Admin force-release: claims never expire, so somebody
+                            has to be able to free a case left held off-shift. */}
+                        {isAdmin && item.claimed_by && item.status !== 'APPROVED' && (
+                          <Tooltip title={`Force-release from ${item.claimed_by}`}>
+                            <span>
+                              <IconButton
+                                size="small"
+                                onClick={() => toggleLock(item, 'release')}
+                                disabled={lockBusyId === item.id}
+                                aria-label={`Force-release case for ${item.patient_name}`}
+                                sx={{ color: 'text.secondary' }}
+                              >
+                                {lockBusyId === item.id
+                                  ? <CircularProgress size={14} />
+                                  : <LockOpenIcon fontSize="small" />}
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                        )}
+
+                        {/* "Review" is promised only when the case can actually be
+                            reviewed: signed off, or held by this doctor. Unclaimed
+                            or colleague-held cases open read-only, so they say
+                            "Open" -- labelling those "Review" sends the doctor to a
+                            panel that cannot sign, or to a 403. */}
                         <Button size="small" component={RouterLink} to={`/case/${item.id}`}>
-                          {item.status === 'APPROVED' ? 'View' : 'Review'}
+                          {item.status === 'APPROVED' ? 'View'
+                            : (item.claimed_by_me || !isOrthodontist) ? 'Review'
+                              : 'Open'}
                         </Button>
                         {/* Deleting a case destroys a radiograph and possibly a
                             signed referral -- admin only, matching the backend. */}

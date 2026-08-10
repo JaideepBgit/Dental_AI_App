@@ -5,40 +5,57 @@ import {
 } from '@mui/material';
 
 /**
- * Full-dentition viewer for the 128-class hierarchical model.
+ * Wisdom-tooth viewer for the 5-class M3 detector.
  *
- * Unlike the detector behind the Detection tab, this model's classes name the
- * quadrant and the position ('Q3_tooth_8_caries'), so every box arrives already
- * numbered — no geometric ranking, and a first molar is labelled a first molar
- * rather than being forced into one of four wisdom-tooth labels.
+ * This model answers the same question as the Detection tab, but its classes
+ * (M3_UR / M3_UL / M3_LL / M3_LR) name WHICH wisdom tooth, so every third molar
+ * arrives already identified. The Detection tab's 2-class detector can only say
+ * "a 3rd molar" and has to fall back on geometry — arch split, midline, ranking
+ * outward — which mislabels teeth on partially-detected arches. Nothing here is
+ * ever geometric, which is what this tab exists to demonstrate.
  *
- * Geometry follows Viewer.jsx and SegmentationViewer.jsx: the radiograph is an
- * <image> INSIDE the SVG, so one viewBox governs both and boxes cannot drift
- * from the anatomy when height is the binding constraint.
+ * Each of the four wisdom teeth gets its own hue, unlike DentitionViewer where
+ * they share one: telling them apart is the entire claim under test, so a
+ * mislabelled quadrant should be visible at a glance rather than requiring the
+ * reader to check a number.
+ *
+ * Geometry follows Viewer.jsx / SegmentationViewer.jsx / DentitionViewer.jsx:
+ * the radiograph is an <image> INSIDE the SVG, so one viewBox governs both and
+ * boxes cannot drift from the anatomy when height is the binding constraint.
  */
 
-// Third molars are the clinical subject of this app, so they are the only teeth
-// given a distinct hue. Everything else is one neutral colour: with up to 32
-// boxes on screen, per-tooth colours read as noise rather than information.
-const THIRD_MOLAR_COLOR = '#f59e0b';
-const TOOTH_COLOR = '#38bdf8';
-const UNNUMBERED_COLOR = '#64748b';
+// One hue per wisdom tooth, keyed by the model's own class name.
+const M3_COLORS = {
+  M3_UR: '#f59e0b',
+  M3_UL: '#22c55e',
+  M3_LL: '#38bdf8',
+  M3_LR: '#a855f7',
+};
+const TOOTH_COLOR = '#64748b';
 
-// Disease token -> colour, used only for the small tag under a hovered tooth.
-const DISEASE_COLORS = {
-  'impacted': '#f59e0b',
-  'caries': '#ef4444',
-  'deep caries': '#dc2626',
-  'periapical lesion': '#f97316',
+// Quadrant names for the hover label, in patient anatomy.
+const M3_LABELS = {
+  M3_UR: 'Upper-Right',
+  M3_UL: 'Upper-Left',
+  M3_LL: 'Lower-Left',
+  M3_LR: 'Lower-Right',
+};
+
+// Pathology joined onto this tooth from the segmentation model. Same palette as
+// the Detection tab so a finding reads identically in both places.
+const FINDING_COLORS = {
+  Caries: '#ef4444',
+  'Periapical lesion': '#f97316',
+  'impacted tooth': '#f59e0b',
+  'Retained root': '#e11d48',
+  'Root Piece': '#e11d48',
 };
 
 function colorFor(det) {
-  if (det.is_third_molar) return THIRD_MOLAR_COLOR;
-  if (!det.fdi_number) return UNNUMBERED_COLOR;
-  return TOOTH_COLOR;
+  return M3_COLORS[det.class_name] || TOOTH_COLOR;
 }
 
-export default function DentitionViewer({
+export default function M3Viewer({
   imageUrl, detections, isAnalyzing, hoveredId, onHover,
 }) {
   const [size, setSize] = useState(null);
@@ -63,6 +80,14 @@ export default function DentitionViewer({
   }), [all, minConf, scope]);
 
   const thirdMolarCount = all.filter((d) => d.is_third_molar).length;
+
+  // Which of the four this model actually found. Absence is clinically real —
+  // wisdom teeth are the most commonly missing teeth — so the legend below
+  // reports found vs not-found rather than silently omitting them.
+  const foundClasses = useMemo(
+    () => new Set(all.filter((d) => d.is_third_molar).map((d) => d.class_name)),
+    [all],
+  );
 
   // Scale strokes/text to image width so a 3000px and an 800px panoramic look
   // the same on screen.
@@ -96,7 +121,7 @@ export default function DentitionViewer({
             >
               <CircularProgress size={40} thickness={4} sx={{ color: '#38bdf8' }} />
               <Typography variant="body2" sx={{ color: '#e2e8f0', mt: 2, fontWeight: 500 }}>
-                Reading dentition…
+                Locating wisdom teeth…
               </Typography>
             </Box>
           )}
@@ -132,7 +157,7 @@ export default function DentitionViewer({
               viewBox={`0 0 ${size.w} ${size.h}`}
               preserveAspectRatio="xMidYMid meet"
               role="img"
-              aria-label="Panoramic radiograph with numbered teeth"
+              aria-label="Panoramic radiograph with identified wisdom teeth"
               sx={{
                 display: 'block',
                 width: '100%',
@@ -163,7 +188,7 @@ export default function DentitionViewer({
                     fill={color}
                     fillOpacity={isHovered ? 0.25 : 0.06}
                     stroke={color}
-                    strokeWidth={(isHovered ? 6 : det.is_third_molar ? 4 : 2.5) * unit}
+                    strokeWidth={(isHovered ? 6 : det.is_third_molar ? 4 : 2) * unit}
                     onMouseEnter={() => onHover?.(det.id)}
                     onMouseLeave={() => onHover?.(null)}
                     style={{ cursor: 'pointer', transition: 'stroke-width 0.15s ease-out' }}
@@ -172,15 +197,15 @@ export default function DentitionViewer({
               })}
 
               {/*
-                FDI number sits on every numbered tooth — it is the point of
-                this tab. The disease token is held back for the hover label:
-                32 always-on pathology tags would bury the radiograph.
+                Only wisdom teeth are numbered. The plain 'Tooth' class carries
+                no identity in this model, so labelling those boxes would assert
+                a number the model never predicted.
               */}
-              {visible.filter((d) => d.fdi_number).map((det) => {
+              {visible.filter((d) => d.is_third_molar && d.fdi_number).map((det) => {
                 const color = colorFor(det);
                 const [x1, y1, x2] = det.bbox;
                 const cx = (x1 + x2) / 2;
-                const fontSize = (det.is_third_molar ? 34 : 26) * unit;
+                const fontSize = 34 * unit;
                 const boxW = fontSize * 1.9;
                 const boxH = fontSize * 1.35;
 
@@ -194,8 +219,7 @@ export default function DentitionViewer({
                   <g key={`num-${det.id}`} style={{ pointerEvents: 'none' }}>
                     <rect
                       x={boxX} y={boxY} width={boxW} height={boxH}
-                      fill={color} rx={3 * unit}
-                      fillOpacity={det.is_third_molar ? 1 : 0.85}
+                      fill={color} rx={3 * unit} fillOpacity={1}
                     />
                     <text
                       x={boxX + boxW / 2}
@@ -212,12 +236,14 @@ export default function DentitionViewer({
                 );
               })}
 
-              {/* Hovered tooth only: confidence and the model's disease token. */}
+              {/* Hovered tooth only: quadrant, confidence, and joined findings. */}
               {visible.filter((det) => det.id === hoveredId).map((det) => {
                 const [x1, y1, x2, y2] = det.bbox;
                 const cx = (x1 + x2) / 2;
-                const parts = [`${(det.confidence * 100).toFixed(0)}%`];
-                if (det.disease) parts.push(det.disease);
+                const parts = [];
+                if (M3_LABELS[det.class_name]) parts.push(M3_LABELS[det.class_name]);
+                parts.push(`${(det.confidence * 100).toFixed(0)}%`);
+                (det.findings || []).forEach((f) => parts.push(f.class_name));
                 const label = parts.join(' · ');
 
                 const fontSize = 26 * unit;
@@ -225,7 +251,8 @@ export default function DentitionViewer({
                 const boxH = fontSize * 1.5;
                 const boxY = y2 + 8 * unit;
                 const boxX = Math.min(Math.max(cx - boxW / 2, 0), size.w - boxW);
-                const bg = DISEASE_COLORS[det.disease] || '#1e293b';
+                const firstFinding = (det.findings || [])[0]?.class_name;
+                const bg = FINDING_COLORS[firstFinding] || '#1e293b';
 
                 return (
                   <g key={`meta-${det.id}`} style={{ pointerEvents: 'none' }}>
@@ -266,7 +293,7 @@ export default function DentitionViewer({
             sx={{ flexShrink: 0 }}
           >
             <ToggleButton value="third" sx={{ px: 1.5, py: 0.4, fontSize: '0.72rem' }}>
-              3rd molars ({thirdMolarCount})
+              Wisdom teeth ({thirdMolarCount})
             </ToggleButton>
             <ToggleButton value="all" sx={{ px: 1.5, py: 0.4, fontSize: '0.72rem' }}>
               All teeth ({all.length})
@@ -294,36 +321,42 @@ export default function DentitionViewer({
           </Stack>
         </Stack>
 
+        {/*
+          All four are always listed. A wisdom tooth the model did not find is
+          shown greyed rather than omitted, because "not present" is a real and
+          common finding and an absent legend row would read as an oversight.
+        */}
         <Stack sx={{ flexWrap: 'wrap' }} direction="row" spacing={0.75} useFlexGap>
-          {[
-            ['3rd molar', THIRD_MOLAR_COLOR],
-            ['Numbered tooth', TOOTH_COLOR],
-            ['Unnumbered', UNNUMBERED_COLOR],
-          ].map(([label, color]) => (
-            <Chip
-              key={label}
-              size="small"
-              label={label}
-              sx={{
-                height: 24,
-                fontSize: '0.7rem',
-                bgcolor: `${color}1F`,
-                border: '1px solid',
-                borderColor: `${color}66`,
-                '& .MuiChip-label': { px: 0.75 },
-                '&::before': {
-                  content: '""',
-                  display: 'inline-block',
-                  width: 8,
-                  height: 8,
-                  borderRadius: '50%',
-                  bgcolor: color,
-                  ml: 0.75,
-                  flexShrink: 0,
-                },
-              }}
-            />
-          ))}
+          {Object.entries(M3_LABELS).map(([cls, label]) => {
+            const found = foundClasses.has(cls);
+            const color = found ? M3_COLORS[cls] : TOOTH_COLOR;
+            return (
+              <Chip
+                key={cls}
+                size="small"
+                label={found ? label : `${label} — not found`}
+                sx={{
+                  height: 24,
+                  fontSize: '0.7rem',
+                  opacity: found ? 1 : 0.6,
+                  bgcolor: `${color}1F`,
+                  border: '1px solid',
+                  borderColor: `${color}66`,
+                  '& .MuiChip-label': { px: 0.75 },
+                  '&::before': {
+                    content: '""',
+                    display: 'inline-block',
+                    width: 8,
+                    height: 8,
+                    borderRadius: '50%',
+                    bgcolor: color,
+                    ml: 0.75,
+                    flexShrink: 0,
+                  },
+                }}
+              />
+            );
+          })}
         </Stack>
       </Stack>
     </Box>

@@ -51,7 +51,7 @@ export default function Viewer({
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        minHeight: 420,
+        minHeight: { xs: 260, sm: 420 },
         p: { xs: 1.5, md: 2 },
         boxShadow: 'inset 0px 4px 20px rgba(0,0,0,0.3)',
       }}
@@ -128,7 +128,7 @@ export default function Viewer({
               // Bound the height the same way the container did, and let the
               // viewBox letterbox within it. maxHeight on the SVG is safe here
               // because nothing else has to match its box.
-              maxHeight: '68vh',
+              maxHeight: { xs: '60dvh', md: '68dvh' },
               borderRadius: 1,
               overflow: 'hidden',
             }}

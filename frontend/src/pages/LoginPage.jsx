@@ -12,6 +12,7 @@ import {
 import LoginIcon from '@mui/icons-material/Login';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 
+import { PRACTICE_INITIALS, PRACTICE_NAME, PRACTICE_TAGLINE } from '../branding';
 import { useAuth } from '../services/AuthProvider';
 
 export default function LoginPage() {
@@ -71,11 +72,11 @@ export default function LoginPage() {
                 fontWeight: 700, fontSize: '1.2rem',
               }}
             >
-              S
+              {PRACTICE_INITIALS}
             </Box>
-            <Typography variant="h5" sx={{ fontWeight: 600 }}>SmileAI</Typography>
+            <Typography variant="h5" sx={{ fontWeight: 600 }}>{PRACTICE_NAME}</Typography>
             <Typography variant="body2" color="text.secondary">
-              Third molar review portal
+              {PRACTICE_TAGLINE}
             </Typography>
           </Stack>
 

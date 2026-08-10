@@ -40,7 +40,7 @@ from auth import (
 from db import (
     AuditLog, DECISIONS, DECISION_NO_ACTION, Detection, Location, OPEN_STATUSES,
     Patient, Prescription, ROLE_ADMIN, ROLE_ORTHODONTIST, ROLES, ReferralSlip,
-    SessionLocal, User, XRay, get_db_session, init_db, STATUS_APPROVED,
+    SessionLocal, Signature, User, XRay, get_db_session, init_db, STATUS_APPROVED,
     STATUS_ERROR, STATUS_PENDING, STATUS_PROCESSED,
 )
 from referral import generate_referral
@@ -55,9 +55,20 @@ DATA_DIR = os.environ.get("DATA_DIR", BASE_DIR)
 XRAY_STORE = os.path.join(DATA_DIR, "xray_store")
 OUTPUT_DIR = os.path.join(DATA_DIR, "output_prescriptions")
 ANNOTATED_DIR = os.path.join(DATA_DIR, "annotated")
+# Reusable clinician signatures. On the mounted volume with everything else, so
+# a saved signature survives instance replacement like any other record.
+SIGNATURE_DIR = os.path.join(DATA_DIR, "signatures")
 
-for _d in (XRAY_STORE, OUTPUT_DIR, ANNOTATED_DIR):
+for _d in (XRAY_STORE, OUTPUT_DIR, ANNOTATED_DIR, SIGNATURE_DIR):
     os.makedirs(_d, exist_ok=True)
+
+# Signature uploads are small PNG/JPG marks, never radiographs. The cap is
+# generous for a signature yet keeps a mis-picked file out of the store.
+MAX_SIGNATURE_BYTES = 2 * 1024 * 1024
+SIGNATURE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+# How many a doctor may keep. Enough for a legal signature, initials and a
+# credentialed variant without turning the picker into a scroll.
+MAX_SIGNATURES_PER_USER = 10
 
 # FDI codes for the four wisdom teeth: upper-right, upper-left, lower-left,
 # lower-right third molars.
@@ -149,6 +160,17 @@ def _model_info():
     except Exception as exc:
         info["hierarchical"] = {"error": str(exc)}
 
+    # The 5-class M3 detector. Reported separately from the detector it is a
+    # candidate replacement for, so the UI can show both while it is on trial.
+    try:
+        from inference import get_m3_engine
+
+        m3 = get_m3_engine()
+        if m3 is not None:
+            info["m3"] = m3.describe()
+    except Exception as exc:
+        info["m3"] = {"error": str(exc)}
+
     return info
 
 
@@ -190,30 +212,74 @@ def _detection_dict(det: Detection, third_molar_ids: Optional[set] = None) -> di
         "needs_extraction": bool(det.needs_extraction),
         "is_third_molar": is_third,
         "disease": det.disease,
+        # Overlapping seg findings, joined onto this tooth at inference time.
+        # Display-only; needs_extraction stays the doctor's call.
+        "findings": json.loads(det.findings_json) if det.findings_json else [],
         "notes": det.notes,
     }
 
 
+def _case_block_reason(x: XRay, user: User) -> Optional[str]:
+    """
+    Why `user` may not work case `x`, or None if they may.
+
+    The queue is shared: any orthodontist may open any case that is neither
+    directed to a colleague by an admin nor currently under a colleague's review.
+    Two things take a case out of reach:
+
+      assigned_to_id  an admin deliberately directed it to one doctor
+      claimed_by_id   a colleague is reviewing it right now
+
+    A doctor's own claim never blocks them, so re-opening their own case is
+    always allowed. Admins are unrestricted -- they need to see any case to
+    administer it, and cannot sign in any event.
+    """
+    if user.role != ROLE_ORTHODONTIST:
+        return None
+    if x.assigned_to_id is not None and x.assigned_to_id != user.id:
+        return "This case has been assigned to another orthodontist."
+    if x.claimed_by_id is not None and x.claimed_by_id != user.id:
+        # Naming the holder is deliberate here: on a shared queue the doctor
+        # needs to know who to ask to hand the case over. Under the old
+        # admin-assigned model there was nobody to ask, so it was withheld.
+        holder = x.claimed_by.full_name if x.claimed_by else "another orthodontist"
+        return f"This case is under review by {holder}."
+    return None
+
+
 def _require_case_access(x: XRay, user: User) -> None:
     """
-    An orthodontist may only touch cases assigned to them.
+    Guard every read and write on one case.
 
     403 with an explanatory message, rather than a bare 404: the doctor needs to
     understand that the case exists but is not theirs to work, otherwise the UI
-    can only report "not found", which reads as a broken link. The message
-    deliberately never names the colleague who holds it -- who else is working
-    what is not this doctor's business.
+    can only report "not found", which reads as a broken link.
     """
-    if user.role != ROLE_ORTHODONTIST or x.assigned_to_id == user.id:
-        return
+    reason = _case_block_reason(x, user)
+    if reason:
+        raise HTTPException(status_code=403, detail=reason)
 
-    detail = (
-        "This case has not been assigned to you yet. An administrator assigns "
-        "cases from the review queue."
-        if x.assigned_to_id is None
-        else "This case is assigned to another orthodontist."
-    )
-    raise HTTPException(status_code=403, detail=detail)
+
+def _require_claim_to_sign(x: XRay, user: User) -> None:
+    """
+    Signing requires holding the review lock.
+
+    Without this a doctor could open a case, sit on it while a colleague claimed
+    and signed it, and then sign it too -- the exact double-work the lock exists
+    to prevent. `_require_case_access` alone does not cover it: an unclaimed case
+    is readable by everyone, so the claim has to be checked separately at the
+    point of writing a clinical record.
+    """
+    if x.claimed_by_id == user.id:
+        return
+    if x.claimed_by_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Claim this case for review before signing it.")
+    holder = x.claimed_by.full_name if x.claimed_by else "another orthodontist"
+    raise HTTPException(
+        status_code=409,
+        detail=f"This case is under review by {holder}; you cannot sign it.")
 
 
 def _prescription_dto(p) -> dict:
@@ -360,6 +426,248 @@ def change_password(request: Request,
     db.commit()
     audit(db, "PASSWORD_CHANGED", actor=user, request=request)
     return {"status": "ok"}
+
+
+# ===========================================================================
+# Reusable e-signatures
+#
+# Each clinician manages their own: upload an image of a wet signature, or draw
+# one once and save it. A signature is then picked at sign-off instead of being
+# re-drawn per case. Strictly self-service -- signatures are never listed,
+# created or deleted across users, because a signature another person can attach
+# to a clinical record is a forgery vector, admin or not.
+# ===========================================================================
+
+def _signature_dto(s: Signature) -> dict:
+    return {
+        "id": s.id,
+        "label": s.label,
+        "source": s.source,
+        "is_default": bool(s.is_default),
+        "created_at": s.created_at.isoformat() if s.created_at else None,
+        "image_url": f"/api/signatures/{s.id}/image",
+    }
+
+
+def _owned_signature(sig_id: int, user: User, db: Session) -> Signature:
+    """Fetch one of the caller's OWN signatures, or 404.
+
+    404 rather than 403 for someone else's row: whether another clinician
+    happens to have a signature with this id is not information this caller is
+    entitled to.
+    """
+    sig = (db.query(Signature)
+           .filter(Signature.id == sig_id, Signature.user_id == user.id)
+           .first())
+    if not sig:
+        raise HTTPException(status_code=404, detail="Signature not found.")
+    return sig
+
+
+def _clear_other_defaults(user_id: int, keep_id: Optional[int], db: Session) -> None:
+    """Enforce at most one default per user."""
+    q = db.query(Signature).filter(Signature.user_id == user_id,
+                                   Signature.is_default.is_(True))
+    if keep_id is not None:
+        q = q.filter(Signature.id != keep_id)
+    for other in q.all():
+        other.is_default = False
+
+
+@app.get("/api/signatures")
+def list_signatures(user: User = Depends(require_user),
+                    db: Session = Depends(get_db_session)):
+    """The caller's saved signatures, default first then newest."""
+    rows = (db.query(Signature)
+            .filter(Signature.user_id == user.id)
+            .order_by(Signature.is_default.desc(), Signature.created_at.desc())
+            .all())
+    return {"count": len(rows), "items": [_signature_dto(s) for s in rows]}
+
+
+@app.post("/api/signatures", status_code=201)
+async def create_signature(
+    request: Request,
+    label: str = Form(...),
+    file: Optional[UploadFile] = File(None),
+    image_data: Optional[str] = Form(None),
+    make_default: str = Form("false"),
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db_session),
+):
+    """
+    Save a reusable signature, from either an uploaded image file or a drawing.
+
+    Supply exactly one of:
+      file        an uploaded PNG/JPG/WEBP of a wet signature
+      image_data  a "data:image/png;base64,..." URL captured from the canvas
+
+    The first signature a clinician saves becomes their default automatically --
+    otherwise the common case of having exactly one still requires a second step
+    before it ever preloads at sign-off.
+    """
+    import base64
+
+    clean_label = (label or "").strip()
+    if not clean_label:
+        raise HTTPException(status_code=400, detail="Give the signature a label.")
+    if len(clean_label) > 60:
+        raise HTTPException(status_code=400, detail="Label must be 60 characters or fewer.")
+
+    has_file = file is not None and bool(file.filename)
+    has_data = bool((image_data or "").strip())
+    if has_file == has_data:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide either an image file or a drawn signature, not both.")
+
+    existing = db.query(Signature).filter(Signature.user_id == user.id).count()
+    if existing >= MAX_SIGNATURES_PER_USER:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"You already have {MAX_SIGNATURES_PER_USER} saved signatures. "
+                    "Delete one before adding another."))
+
+    if has_file:
+        ext = os.path.splitext(file.filename or "")[1].lower()
+        if ext not in SIGNATURE_EXTS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported image type '{ext or 'unknown'}'. "
+                       f"Use {', '.join(sorted(SIGNATURE_EXTS))}.")
+        payload = await file.read()
+        source = "upload"
+    else:
+        raw = image_data.strip()
+        if not raw.startswith("data:image/"):
+            raise HTTPException(status_code=400,
+                                detail="Drawn signature must be a data:image URL.")
+        try:
+            payload = base64.b64decode(raw.split(",", 1)[1])
+        except (IndexError, ValueError):
+            raise HTTPException(status_code=400,
+                                detail="Drawn signature could not be decoded.")
+        ext = ".png"
+        source = "drawn"
+
+    if not payload:
+        raise HTTPException(status_code=400, detail="Signature image is empty.")
+    if len(payload) > MAX_SIGNATURE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Signature image must be under "
+                   f"{MAX_SIGNATURE_BYTES // (1024 * 1024)} MB.")
+
+    # Verify the bytes really are a decodable image before storing them. Trusting
+    # the extension would let an arbitrary file land in the store and then fail
+    # at PDF-generation time, i.e. mid-sign-off.
+    try:
+        from PIL import Image
+        import io
+
+        Image.open(io.BytesIO(payload)).verify()
+    except Exception:
+        raise HTTPException(status_code=400,
+                            detail="That file is not a readable image.")
+
+    stored_name = f"sig_{user.id}_{uuid.uuid4().hex[:10]}{ext}"
+    stored_path = os.path.join(SIGNATURE_DIR, stored_name)
+    with open(stored_path, "wb") as fh:
+        fh.write(payload)
+
+    wants_default = str(make_default).lower() in ("1", "true", "yes")
+    is_default = wants_default or existing == 0
+
+    sig = Signature(user_id=user.id, label=clean_label, file_path=stored_path,
+                    source=source, is_default=is_default)
+    db.add(sig)
+    db.flush()
+    if is_default:
+        _clear_other_defaults(user.id, sig.id, db)
+    db.commit()
+    db.refresh(sig)
+
+    audit(db, "SIGNATURE_CREATED", actor=user, request=request,
+          target_type="signature", target_id=sig.id,
+          detail=f"label={clean_label} source={source} default={is_default}")
+    return _signature_dto(sig)
+
+
+@app.patch("/api/signatures/{sig_id}")
+def update_signature(sig_id: int, request: Request,
+                     label: Optional[str] = Form(None),
+                     make_default: Optional[str] = Form(None),
+                     user: User = Depends(require_user),
+                     db: Session = Depends(get_db_session)):
+    """Rename a signature, or promote it to the default."""
+    sig = _owned_signature(sig_id, user, db)
+
+    if label is not None:
+        clean = label.strip()
+        if not clean:
+            raise HTTPException(status_code=400, detail="Label cannot be empty.")
+        if len(clean) > 60:
+            raise HTTPException(status_code=400,
+                                detail="Label must be 60 characters or fewer.")
+        sig.label = clean
+
+    if make_default is not None and str(make_default).lower() in ("1", "true", "yes"):
+        sig.is_default = True
+        _clear_other_defaults(user.id, sig.id, db)
+
+    db.commit()
+    db.refresh(sig)
+    audit(db, "SIGNATURE_UPDATED", actor=user, request=request,
+          target_type="signature", target_id=sig.id)
+    return _signature_dto(sig)
+
+
+@app.delete("/api/signatures/{sig_id}")
+def delete_signature(sig_id: int, request: Request,
+                     user: User = Depends(require_user),
+                     db: Session = Depends(get_db_session)):
+    """
+    Remove a signature from the caller's picker.
+
+    Already-signed prescriptions are untouched: each stored its own copy of the
+    image at signing time, so deleting the reusable one cannot alter a historical
+    record. If the default is deleted, the next most recent is promoted so the
+    clinician is not silently left with none preloaded.
+    """
+    sig = _owned_signature(sig_id, user, db)
+    was_default = bool(sig.is_default)
+    label, path = sig.label, sig.file_path
+
+    db.delete(sig)
+    db.flush()
+
+    promoted = None
+    if was_default:
+        promoted = (db.query(Signature)
+                    .filter(Signature.user_id == user.id)
+                    .order_by(Signature.created_at.desc()).first())
+        if promoted:
+            promoted.is_default = True
+
+    db.commit()
+    _unlink(path)
+
+    audit(db, "SIGNATURE_DELETED", actor=user, request=request,
+          target_type="signature", target_id=sig_id, detail=f"label={label}")
+    return {"status": "deleted", "id": sig_id,
+            "promoted_id": promoted.id if promoted else None}
+
+
+@app.get("/api/signatures/{sig_id}/image")
+def get_signature_image(sig_id: int, user: User = Depends(require_user),
+                        db: Session = Depends(get_db_session)):
+    """Raw signature image, for the picker and the sign-off preview."""
+    sig = _owned_signature(sig_id, user, db)
+    if not os.path.exists(sig.file_path):
+        raise HTTPException(status_code=404, detail="Signature image file is missing.")
+    # no-store: a signature is credential-grade. Letting a shared browser cache
+    # hold it would leave it readable after the clinician signs out.
+    return FileResponse(sig.file_path, headers={"Cache-Control": "no-store"})
 
 
 # ===========================================================================
@@ -568,7 +876,12 @@ def assign_xray(xray_id: int, request: Request,
                 admin: User = Depends(require_admin),
                 db: Session = Depends(get_db_session)):
     """
-    Assign a case to an orthodontist, or unassign it by omitting user_id.
+    Direct a case to one orthodontist, or return it to the shared queue by
+    omitting user_id.
+
+    Assignment is now an optional override, not the normal route to work: an
+    unassigned case is visible to every orthodontist and worked by whoever claims
+    it. Assigning is for when a specific doctor must handle a specific case.
 
     Only an active orthodontist can hold a case: assigning to an admin would put
     the case in a queue nobody works, and assigning to a deactivated user would
@@ -601,15 +914,28 @@ def assign_xray(xray_id: int, request: Request,
     x.assigned_to_id = target.id
     x.assigned_at = datetime.now()
     x.assigned_by_id = admin.id
+
+    # Directing the case elsewhere drops a colleague's review lock. Leaving it
+    # would strand the case: the holder can no longer open it, yet their claim
+    # would still block the doctor it was just assigned to.
+    displaced = None
+    if x.claimed_by_id is not None and x.claimed_by_id != target.id:
+        displaced = x.claimed_by.full_name if x.claimed_by else None
+        x.claimed_by_id = None
+        x.claimed_at = None
+
     db.commit()
 
     audit(db, "XRAY_ASSIGNED", actor=admin, target_type="xray", target_id=x.id,
-          detail=f"to={target.email}", request=request)
+          detail=f"to={target.email}"
+                 + (f" claim_dropped_from={displaced}" if displaced else ""),
+          request=request)
     return {
         "xray_id": x.id,
         "assigned_to_id": target.id,
         "assigned_to": target.full_name,
         "assigned_at": x.assigned_at.isoformat(),
+        "claim_dropped_from": displaced,
     }
 
 
@@ -647,6 +973,13 @@ def assign_bulk(request: Request,
         x.assigned_to_id = target.id if target else None
         x.assigned_at = now if target else None
         x.assigned_by_id = admin.id if target else None
+        # As in the single-case path: a claim held by anyone other than the new
+        # owner has to go, or the case is locked against the doctor it was just
+        # assigned to. Unassigning back to the shared pool leaves claims alone --
+        # whoever is mid-review keeps the case they are working.
+        if target and x.claimed_by_id is not None and x.claimed_by_id != target.id:
+            x.claimed_by_id = None
+            x.claimed_at = None
     db.commit()
 
     audit(db, "XRAY_ASSIGNED_BULK", actor=admin, target_type="xray",
@@ -659,6 +992,108 @@ def assign_bulk(request: Request,
         "assigned_to": target.full_name if target else None,
         "not_found": missing,
     }
+
+
+# ===========================================================================
+# Review locks
+#
+# The queue is shared, so two doctors can open the same case seconds apart.
+# Claiming takes the case out of everyone else's queue for the duration of the
+# review; releasing puts it back. Signing releases it automatically.
+# ===========================================================================
+
+@app.post("/api/xray/{xray_id}/claim")
+def claim_xray(xray_id: int, request: Request,
+               clinician: User = Depends(require_orthodontist),
+               db: Session = Depends(get_db_session)):
+    """
+    Take the review lock on a case so colleagues cannot work it concurrently.
+
+    Idempotent for the holder: re-claiming a case you already hold succeeds and
+    changes nothing, so a refreshed tab or a double-click is not an error.
+
+    The winner of a race is decided by the database, not by the read below: two
+    doctors clicking together both pass the "unclaimed" check, so the UPDATE is
+    written conditionally on the row still being unclaimed and the loser is told
+    who holds it.
+    """
+    x = db.query(XRay).filter(XRay.id == xray_id).first()
+    if not x:
+        raise HTTPException(status_code=404, detail="X-ray not found")
+
+    if x.assigned_to_id is not None and x.assigned_to_id != clinician.id:
+        raise HTTPException(status_code=403,
+                            detail="This case has been assigned to another orthodontist.")
+    # An APPROVED case is deliberately still claimable: recording an amendment is
+    # a review, and it goes through /api/approve, which requires the lock. Blocking
+    # the claim here would make amendments impossible to sign.
+    if x.claimed_by_id == clinician.id:
+        return {"xray_id": x.id, "claimed_by_id": clinician.id,
+                "claimed_by": clinician.full_name,
+                "claimed_at": x.claimed_at.isoformat() if x.claimed_at else None,
+                "already_held": True}
+
+    now = datetime.now()
+    # Conditional UPDATE: only claims the row if it is still unclaimed. Doing this
+    # as a filtered update rather than an attribute assignment closes the window
+    # between the check above and the commit.
+    won = (db.query(XRay)
+           .filter(XRay.id == x.id, XRay.claimed_by_id.is_(None))
+           .update({XRay.claimed_by_id: clinician.id, XRay.claimed_at: now},
+                   synchronize_session=False))
+    db.commit()
+
+    if not won:
+        db.refresh(x)
+        holder = x.claimed_by.full_name if x.claimed_by else "another orthodontist"
+        raise HTTPException(status_code=409,
+                            detail=f"This case is under review by {holder}.")
+
+    db.refresh(x)
+    audit(db, "XRAY_CLAIMED", actor=clinician, target_type="xray",
+          target_id=x.id, request=request)
+    return {"xray_id": x.id, "claimed_by_id": clinician.id,
+            "claimed_by": clinician.full_name,
+            "claimed_at": now.isoformat(), "already_held": False}
+
+
+@app.post("/api/xray/{xray_id}/release")
+def release_xray(xray_id: int, request: Request,
+                 user: User = Depends(require_user),
+                 db: Session = Depends(get_db_session)):
+    """
+    Give up the review lock, returning the case to the shared queue.
+
+    The holder can always release their own claim. An admin can force-release
+    anyone's -- the escape hatch for a doctor who is off shift with a case still
+    held, since claims never expire on their own.
+    """
+    x = db.query(XRay).filter(XRay.id == xray_id).first()
+    if not x:
+        raise HTTPException(status_code=404, detail="X-ray not found")
+
+    if x.claimed_by_id is None:
+        return {"xray_id": x.id, "claimed_by_id": None, "released": False}
+
+    is_holder = x.claimed_by_id == user.id
+    is_admin = user.role == ROLE_ADMIN
+    if not (is_holder or is_admin):
+        holder = x.claimed_by.full_name if x.claimed_by else "another orthodontist"
+        raise HTTPException(
+            status_code=403,
+            detail=f"This case is under review by {holder}. Only they or an "
+                   "administrator can release it.")
+
+    previous = x.claimed_by.full_name if x.claimed_by else None
+    x.claimed_by_id = None
+    x.claimed_at = None
+    db.commit()
+
+    audit(db, "XRAY_RELEASED" if is_holder else "XRAY_FORCE_RELEASED",
+          actor=user, target_type="xray", target_id=x.id,
+          detail=None if is_holder else f"was_held_by={previous}", request=request)
+    return {"xray_id": x.id, "claimed_by_id": None, "released": True,
+            "was_held_by": previous, "forced": not is_holder}
 
 
 @app.get("/api/admin/audit")
@@ -684,6 +1119,7 @@ def queue(
     search: Optional[str] = None,
     scope: Optional[str] = None,
     assigned: Optional[str] = None,
+    mine: Optional[str] = None,
     user: User = Depends(require_user),
 ):
     """
@@ -697,9 +1133,13 @@ def queue(
     status    restrict to one lifecycle status (overrides include_approved)
     search    case-insensitive match on patient name or MRN
     assigned  admin only: 'unassigned', 'mine', or a user id to filter by owner.
+    mine      doctor only: 'true' narrows the shared queue to cases this
+              clinician holds or has been assigned.
 
-    An orthodontist sees ONLY cases assigned to them -- enforced here, not in the
-    UI, so a hand-crafted request cannot widen the result. Admins see everything.
+    The queue is shared. An orthodontist sees every case except those an admin
+    directed to a different doctor -- including cases a colleague currently holds,
+    which come back flagged `claimed_by` so the UI can show them as under review
+    rather than hiding work that exists. Admins see everything unconditionally.
     """
     if scope == "unworked":
         statuses = list(OPEN_STATUSES) + [STATUS_ERROR]
@@ -715,8 +1155,14 @@ def queue(
     query = db.query(XRay).filter(XRay.status.in_(statuses))
 
     if user.role == ROLE_ORTHODONTIST:
-        # Hard scope: a doctor's queue is their own caseload, nothing else.
-        query = query.filter(XRay.assigned_to_id == user.id)
+        # Shared queue: everything except cases an admin directed to somebody
+        # else. Cases held by a colleague stay visible (flagged as under review)
+        # so the doctor can see the case exists and who has it.
+        query = query.filter(or_(XRay.assigned_to_id.is_(None),
+                                 XRay.assigned_to_id == user.id))
+        if str(mine or "").lower() in ("1", "true", "yes"):
+            query = query.filter(or_(XRay.claimed_by_id == user.id,
+                                     XRay.assigned_to_id == user.id))
     elif assigned == "unassigned":
         query = query.filter(XRay.assigned_to_id.is_(None))
     elif assigned == "mine":
@@ -777,6 +1223,14 @@ def queue(
             "assigned_to_id": x.assigned_to_id,
             "assigned_to": x.assigned_to.full_name if x.assigned_to else None,
             "assigned_at": x.assigned_at.isoformat() if x.assigned_at else None,
+            # Review lock. `blocked_reason` is the single thing the UI needs to
+            # decide whether to offer this row for work; computing it server-side
+            # keeps the rule in one place instead of re-deriving it per view.
+            "claimed_by_id": x.claimed_by_id,
+            "claimed_by": x.claimed_by.full_name if x.claimed_by else None,
+            "claimed_at": x.claimed_at.isoformat() if x.claimed_at else None,
+            "claimed_by_me": x.claimed_by_id == user.id,
+            "blocked_reason": _case_block_reason(x, user),
             "num_detections": sum(1 for d in dets if (d.source or "detect") == "detect"),
             # Detector rows only: the queue badge tracks the Detection tab, and
             # counting both models would double it for every case.
@@ -939,9 +1393,10 @@ def delete_xray(xray_id: int, db: Session = Depends(get_db_session),
     a single case is not the same as removing the person. Use
     DELETE /api/patients/{mrn} for that.
     """
+    # No _require_case_access here: this is admin-only (require_admin above), and
+    # that guard scopes orthodontists, not admins. Calling it referenced a `user`
+    # name this function never had, which raised NameError on every delete.
     xray = db.query(XRay).filter(XRay.id == xray_id).first()
-    if xray:
-        _require_case_access(xray, user)
     if not xray:
         raise HTTPException(status_code=404, detail="X-ray not found")
 
@@ -1087,6 +1542,13 @@ def get_xray(xray_id: int, request: Request,
         "assigned_to_id": x.assigned_to_id,
         "assigned_to": x.assigned_to.full_name if x.assigned_to else None,
         "assigned_at": x.assigned_at.isoformat() if x.assigned_at else None,
+        # Review lock, so the sign-off panel knows whether this clinician holds
+        # the case and can gate the sign button on it rather than letting the
+        # doctor fill the form out and only fail at submit.
+        "claimed_by_id": x.claimed_by_id,
+        "claimed_by": x.claimed_by.full_name if x.claimed_by else None,
+        "claimed_at": x.claimed_at.isoformat() if x.claimed_at else None,
+        "claimed_by_me": x.claimed_by_id == user.id,
         "prescription": _prescription_dto(active) if active else None,
         "prescription_history": [_prescription_dto(p) for p in history],
         "model": _model_info(),
@@ -1153,6 +1615,9 @@ def run_inference_for_xray(xray_id: int) -> None:
                 polygon_json=json.dumps(det["polygon"]) if det.get("polygon") else None,
                 confidence=det["confidence"],
                 disease=det.get("disease"),
+                findings_json=(
+                    json.dumps(det["findings"]) if det.get("findings") else None
+                ),
             ))
         xray.status = STATUS_PROCESSED
         xray.error_message = None
@@ -1275,7 +1740,8 @@ async def approve(
     xray_id: int = Form(...),
     decision: str = Form(...),
     prescription_text: str = Form(...),
-    signature: str = Form(...),
+    signature: str = Form(""),
+    signature_id: Optional[int] = Form(None),
     extraction_ids: str = Form("[]"),
     dictation_text: Optional[str] = Form(None),
     reviewed_at: Optional[str] = Form(None),
@@ -1289,6 +1755,11 @@ async def approve(
     extraction_ids is a JSON array of Detection.id the doctor ticked. Those are
     the only teeth that appear as extractions anywhere downstream.
 
+    The signature comes from either `signature_id` -- one of the clinician's own
+    saved signatures, which is the normal path -- or a freshly drawn `signature`
+    data URL. Either way the image is COPIED into this prescription's own file, so
+    deleting the reusable signature later cannot alter a signed record.
+
     Attribution -- who signed and when -- comes from the authenticated session and
     the server clock, never from the request body, so a client cannot sign as
     somebody else or backdate a record. `decision` includes NO_ACTION_NEEDED, an
@@ -1301,6 +1772,9 @@ async def approve(
     if not x:
         raise HTTPException(status_code=404, detail="X-ray not found")
     _require_case_access(x, clinician)
+    # Holding the review lock is a precondition for writing a clinical record, so
+    # two doctors on a shared queue cannot both sign the same case.
+    _require_claim_to_sign(x, clinician)
     if decision not in DECISIONS:
         raise HTTPException(status_code=400,
                             detail=f"decision must be one of {list(DECISIONS)}")
@@ -1353,9 +1827,36 @@ async def approve(
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     base = f"{_safe_name(x.patient.mrn if x.patient else 'case')}_{stamp}"
 
-    # Signature: decode the data URL the SignaturePad produced.
+    # Signature: either one of the clinician's saved signatures, or a data URL
+    # drawn on the spot. Both are written to a fresh per-prescription file rather
+    # than referenced, so the signed record keeps the exact mark it was signed
+    # with even if the reusable signature is later renamed or deleted.
     signature_path = None
-    if signature.startswith("data:image"):
+    if signature_id is not None:
+        saved = (db.query(Signature)
+                 .filter(Signature.id == signature_id,
+                         Signature.user_id == clinician.id)
+                 .first())
+        if not saved:
+            # Scoped to the caller: signing with a signature belonging to another
+            # clinician must be impossible, not merely discouraged.
+            raise HTTPException(status_code=404,
+                                detail="That saved signature was not found on your account.")
+        if not os.path.exists(saved.file_path):
+            raise HTTPException(
+                status_code=409,
+                detail=f"The image for signature '{saved.label}' is missing from the "
+                       "store. Re-save it, or draw a signature instead.")
+        ext = os.path.splitext(saved.file_path)[1] or ".png"
+        signature_path = os.path.join(OUTPUT_DIR, f"{base}_signature{ext}")
+        try:
+            import shutil
+
+            shutil.copyfile(saved.file_path, signature_path)
+        except OSError as exc:
+            raise HTTPException(status_code=500,
+                                detail=f"Could not attach the saved signature: {exc}")
+    elif signature.startswith("data:image"):
         try:
             encoded = signature.split(",", 1)[1]
             signature_path = os.path.join(OUTPUT_DIR, f"{base}_signature.png")
@@ -1364,7 +1865,9 @@ async def approve(
         except (IndexError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=f"Invalid signature data: {exc}")
     else:
-        raise HTTPException(status_code=400, detail="Signature must be a data:image URL")
+        raise HTTPException(
+            status_code=400,
+            detail="Sign with a saved signature or draw one before recording the decision.")
 
     det_dicts = [_detection_dict(d, _third_molar_ids(x.detections)) for d in x.detections]
 
@@ -1441,13 +1944,19 @@ async def approve(
         ))
 
     x.status = STATUS_APPROVED
+    # The review is over, so the lock comes off automatically. Requiring an
+    # explicit release after signing would leave signed cases holding locks that
+    # serve no purpose and read as work in progress.
+    x.claimed_by_id = None
+    x.claimed_at = None
     db.commit()
     db.refresh(presc)
 
     audit(db, "PRESCRIPTION_SIGNED", actor=clinician, target_type="xray",
           target_id=x.id,
           detail=f"prescription={presc.id} decision={decision}"
-                 + (f" amends={amends_id}" if amends_id else ""),
+                 + (f" amends={amends_id}" if amends_id else "")
+                 + (f" signature_id={signature_id}" if signature_id else " signature=drawn"),
           request=request)
 
     return {

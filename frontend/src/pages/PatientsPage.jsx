@@ -33,7 +33,13 @@ function patientDeleteDescription({ name, num_xrays: count, num_approved: approv
     + 'and every finding recorded against them. This cannot be undone.';
 }
 
-export default function PatientsPage() {
+/**
+ * `embedded` renders this as a panel inside the Administration tabs: the tab
+ * already names the section, so a second "Patients" heading would be noise, and
+ * the outer page supplies the padding. The search box moves inline above the
+ * table so it is not lost with the header.
+ */
+export default function PatientsPage({ embedded = false }) {
   const api = useApi();
   const [items, setItems] = useState([]);
   const [search, setSearch] = useState('');
@@ -77,26 +83,40 @@ export default function PatientsPage() {
     return () => { cancelled = true; clearTimeout(timer); };
   }, [api, search, reloadKey]);
 
+  const searchField = (
+    <TextField
+      size="small"
+      placeholder="Search name or MRN"
+      value={search}
+      onChange={(e) => setSearch(e.target.value)}
+      slotProps={{
+        input: {
+          startAdornment: <SearchIcon fontSize="small" sx={{ mr: 1, color: 'text.secondary' }} />,
+        },
+      }}
+      sx={{ minWidth: 260 }}
+    />
+  );
+
+  // A tab panel is already inside the admin page's container and padding.
+  const Frame = embedded ? Box : Container;
+  const frameProps = embedded
+    ? {}
+    : { maxWidth: 'lg', sx: { py: { xs: 2, md: 4 } } };
+
   return (
-    <Container maxWidth="lg" sx={{ py: { xs: 2, md: 4 } }}>
-      <PageHeader
-        title="Patients"
-        subtitle="Everyone with a radiograph on record."
-        action={
-          <TextField
-            size="small"
-            placeholder="Search name or MRN"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            slotProps={{
-              input: {
-                startAdornment: <SearchIcon fontSize="small" sx={{ mr: 1, color: 'text.secondary' }} />,
-              },
-            }}
-            sx={{ minWidth: 260 }}
-          />
-        }
-      />
+    <Frame {...frameProps}>
+      {embedded ? (
+        <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 2 }}>
+          {searchField}
+        </Box>
+      ) : (
+        <PageHeader
+          title="Patients"
+          subtitle="Everyone with a radiograph on record."
+          action={searchField}
+        />
+      )}
 
       {error && <Alert severity="error" sx={{ mb: 2.5, borderRadius: 2 }}>{error}</Alert>}
 
@@ -168,7 +188,7 @@ export default function PatientsPage() {
         onCancel={closeDelete}
         onConfirm={confirmDelete}
       />
-    </Container>
+    </Frame>
   );
 }
 
@@ -196,8 +216,9 @@ export function PatientDetailPage() {
     setDeleteError(null);
     try {
       await api.deletePatient(mrn);
-      // This page's subject no longer exists; the list is the only sane landing.
-      navigate('/patients', { replace: true });
+      // This page's subject no longer exists; the directory is the only sane
+      // landing, and it lives under Administration.
+      navigate('/admin/patients', { replace: true });
     } catch (err) {
       setDeleteError(err.message);
       setDeleting(false);
@@ -206,9 +227,10 @@ export function PatientDetailPage() {
 
   return (
     <Container maxWidth="lg" sx={{ py: { xs: 2, md: 4 } }}>
+      {/* The directory lives under Administration now, so back goes there. */}
       <Button
         component={RouterLink}
-        to="/patients"
+        to="/admin/patients"
         startIcon={<BackIcon />}
         size="small"
         sx={{ mb: 2 }}

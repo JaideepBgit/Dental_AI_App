@@ -67,6 +67,20 @@ export function makeFakeApi(overrides = {}) {
     fetchQueue: vi.fn(async () => ({ count: 0, items: [] })),
     fetchXray: vi.fn(async () => null),
     retryXray: vi.fn(async () => ({ status: 'PENDING' })),
+    // Reusable e-signatures. Empty by default so the sign-off panel falls back to
+    // the drawing pad, which is the behaviour tests written before this assumed.
+    fetchSignatures: vi.fn(async () => ({ count: 0, items: [] })),
+    createSignature: vi.fn(async () => ({
+      id: 1, label: 'Full signature', source: 'upload', is_default: true,
+    })),
+    updateSignature: vi.fn(async (id) => ({ id, label: 'Full signature', is_default: true })),
+    deleteSignature: vi.fn(async (id) => ({ status: 'deleted', id, promoted_id: null })),
+    signatureImageUrl: (id) => `/api/signatures/${id}/image`,
+    // Review locks on the shared queue.
+    claimXray: vi.fn(async (id) => ({
+      xray_id: id, claimed_by_id: 2, claimed_by: 'Doctor One', already_held: false,
+    })),
+    releaseXray: vi.fn(async (id) => ({ xray_id: id, claimed_by_id: null, released: true })),
     deleteXray: vi.fn(async () => ({ status: 'deleted', deleted_detections: 0 })),
     deletePatient: vi.fn(async () => ({ status: 'deleted', deleted_xrays: 0 })),
     fetchPatients: vi.fn(async () => ({ count: 0, items: [] })),

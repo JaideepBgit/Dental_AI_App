@@ -20,7 +20,8 @@ import LoginPage from './pages/LoginPage';
 import UploadPage from './pages/UploadPage';
 import QueuePage from './pages/QueuePage';
 import CaseReviewPage from './pages/CaseReviewPage';
-import PatientsPage, { PatientDetailPage } from './pages/PatientsPage';
+// The directory itself is an Administration tab; only the drill-down is routed.
+import { PatientDetailPage } from './pages/PatientsPage';
 import ReferralsPage from './pages/ReferralsPage';
 import SettingsPage from './pages/SettingsPage';
 import { useApi } from './services/ApiProvider';
@@ -114,14 +115,19 @@ function AuthenticatedApp() {
         <Route path="/upload" element={<RequireAdmin><UploadPage /></RequireAdmin>} />
         <Route path="/queue" element={<QueuePage />} />
         <Route path="/case/:id" element={<CaseReviewPage />} />
-        <Route path="/patients" element={<RequireAdmin><PatientsPage /></RequireAdmin>} />
+        {/* The patient directory is an Administration tab now; the old link
+            still resolves so bookmarks and any stale hrefs keep working. */}
+        <Route path="/patients" element={<Navigate to="/admin/patients" replace />} />
         <Route
           path="/patients/:mrn"
           element={<RequireAdmin><PatientDetailPage /></RequireAdmin>}
         />
-        <Route path="/referrals" element={<ReferralsPage />} />
+        {/* Referrals is a tab for an admin and a page of its own for a doctor,
+            who cannot reach /admin at all. */}
+        <Route path="/referrals" element={<ReferralsRoute />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/admin" element={<RequireAdmin><AdminPage /></RequireAdmin>} />
+        <Route path="/admin/:tab" element={<RequireAdmin><AdminPage /></RequireAdmin>} />
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
     </AppShell>
@@ -132,6 +138,15 @@ function AuthenticatedApp() {
 function HomeRoute() {
   const { isAdmin } = useAuth();
   return isAdmin ? <DashboardPage /> : <Navigate to="/queue" replace />;
+}
+
+/**
+ * Referrals is one set of records reached two ways: an admin sees it as a tab
+ * beside the other practice records, a doctor as their own page.
+ */
+function ReferralsRoute() {
+  const { isAdmin } = useAuth();
+  return isAdmin ? <Navigate to="/admin/referrals" replace /> : <ReferralsPage />;
 }
 
 export default function AppRoutes() {

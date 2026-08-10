@@ -14,7 +14,6 @@ import {
 import DashboardIcon from '@mui/icons-material/Dashboard';
 import NewCaseIcon from '@mui/icons-material/AddPhotoAlternate';
 import QueueIcon from '@mui/icons-material/FactCheck';
-import PatientsIcon from '@mui/icons-material/People';
 import ReferralsIcon from '@mui/icons-material/Description';
 import SettingsIcon from '@mui/icons-material/Settings';
 import AdminIcon from '@mui/icons-material/AdminPanelSettings';
@@ -23,30 +22,47 @@ import MenuIcon from '@mui/icons-material/Menu';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 
 import theme from '../theme';
+import { PRACTICE_INITIALS, PRACTICE_NAME } from '../branding';
 import { useAuth } from '../services/AuthProvider';
 
 export const RAIL_WIDTH = 232;
 
 // Order matters: this is the order the rail renders and the order a new user
-// reads the product in.
+// reads the product in. It follows how often a destination is used -- the
+// dashboard is where everyone lands, the review queue is the day's work, and
+// Administration sits with them because it now holds the practice records an
+// admin reaches for. Intake is an occasional action, so it drops below those.
+//
+// Patients and Referrals are practice-wide records rather than daily
+// destinations, so for an admin they live as tabs under Administration instead
+// of spending a rail slot each.
 //
 // An orthodontist's job here is to work the cases assigned to them, so they get
 // the queue, their own referrals, and their own settings -- nothing practice-wide.
-// `doctor: true` marks the items they keep; everything else is admin-only. The
-// backend enforces the same split, so this only avoids showing dead links.
+// `doctor: true` marks the items they keep; everything else is admin-only. A
+// doctor cannot reach /admin at all, so Referrals stays in their rail as a page
+// of its own. The backend enforces the same split, so this only avoids showing
+// dead links.
 export const NAV_ITEMS = [
   { label: 'Dashboard', to: '/', icon: DashboardIcon },
-  { label: 'New Case', to: '/upload', icon: NewCaseIcon },
   { label: 'Review Queue', to: '/queue', icon: QueueIcon, doctor: true },
-  { label: 'Patients', to: '/patients', icon: PatientsIcon },
-  { label: 'Referrals', to: '/referrals', icon: ReferralsIcon, doctor: true },
-  { label: 'Settings', to: '/settings', icon: SettingsIcon, doctor: true },
   { label: 'Administration', to: '/admin', icon: AdminIcon },
+  { label: 'New Case', to: '/upload', icon: NewCaseIcon },
+  { label: 'Referrals', to: '/referrals', icon: ReferralsIcon, doctor: true, doctorOnly: true },
+  { label: 'Settings', to: '/settings', icon: SettingsIcon, doctor: true },
 ];
 
-/** The routes a given role may navigate to. */
+/**
+ * The routes a given role may navigate to.
+ *
+ * `doctorOnly` items are ones an admin reaches somewhere else -- Referrals is a
+ * tab under Administration for them -- so showing it twice would be two links
+ * to the same records.
+ */
 export function navItemsFor(isAdmin) {
-  return isAdmin ? NAV_ITEMS : NAV_ITEMS.filter((item) => item.doctor);
+  return isAdmin
+    ? NAV_ITEMS.filter((item) => !item.doctorOnly)
+    : NAV_ITEMS.filter((item) => item.doctor);
 }
 
 function NavList({ onNavigate, badges = {}, isAdmin = false }) {
@@ -114,10 +130,10 @@ function Brand() {
           fontWeight: 700, fontSize: '0.95rem', flexShrink: 0,
         }}
       >
-        S
+        {PRACTICE_INITIALS}
       </Box>
       <Typography variant="h6" color="text.primary" noWrap>
-        SmileAI
+        {PRACTICE_NAME}
       </Typography>
     </Box>
   );

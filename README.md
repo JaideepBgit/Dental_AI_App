@@ -27,8 +27,14 @@ unnumbered rather than given a guessed number.
 
 ```bash
 pip install -r requirements.txt          # from this directory
-cd frontend && npm install
+cd frontend && npm install && cd ..
+python seed_users.py --demo              # once: creates admin/admin, doctor/doctor
 ```
+
+`seed_users.py` builds the schema and the first logins. The app has
+authentication, so without this step there is no way to log in. It is idempotent
+— re-running skips existing users and never overwrites a password unless you
+pass `--reset`.
 
 Place YOLO weights at `models/best_dental_model.pt`, or point
 `SMILEAI_MODEL_PATH` at them.
@@ -46,6 +52,37 @@ python watcher.py               # optional: watch the RPA inbox folder
 python watcher.py --scan-once   # process what's already in the inbox, then exit
 ```
 
+## Database migrations
+
+Schema is managed by **Alembic** (`alembic/versions/`). `init_db()` runs
+`alembic upgrade head` on every backend start, so a normal deploy needs no
+manual step — restarting the app applies pending migrations.
+
+An existing database created before Alembic was introduced is detected and
+stamped at the baseline revision automatically, then only newer revisions run.
+Nothing is rebuilt and no data is touched.
+
+```bash
+alembic current                 # revision this database is at
+alembic history --verbose       # all revisions
+alembic upgrade head            # apply pending (also done at startup)
+alembic downgrade -1            # step back one
+alembic check                   # models vs database: any undeclared drift?
+alembic upgrade head --sql      # print SQL instead of running it (RDS review)
+```
+
+After changing a model in `db.py`:
+
+```bash
+alembic revision --autogenerate -m "what changed"
+```
+
+**Always read the generated file before committing.** Autogenerate does not
+detect renames — it emits a drop plus an add, which loses data. It also cannot
+see `CHECK` constraints or server defaults reliably. Migrations run against
+SQLite use batch mode (copy-and-swap), since SQLite cannot `ALTER` a column in
+place.
+
 ## Environment variables
 
 | Variable | Default | Purpose |
@@ -56,6 +93,9 @@ python watcher.py --scan-once   # process what's already in the inbox, then exit
 | `SMILEAI_ARCHIVE` | `./inbox_archive` | where ingested files are moved |
 | `SMILEAI_WHISPER_MODEL` | `base` | Whisper size (`tiny`…`large`) |
 | `VITE_API_URL` | `http://localhost:8000` | API base URL for the frontend |
+| `DATABASE_URL` | local `smileai.db` | SQLite locally; RDS Postgres in AWS |
+| `SESSION_SECRET_KEY` | random per start | **set in production** — signs session cookies |
+| `COOKIE_SECURE` | `0` | set `1` when served over HTTPS |
 
 ## Inbox filename conventions
 
@@ -76,6 +116,9 @@ the portal keeps working after the archive is rotated.
 |---|---|
 | `main.py` | FastAPI app: queue, case, upload, transcribe, approve |
 | `db.py` | SQLAlchemy schema (patients, xrays, detections, referrals) |
+| `alembic/` | Migration scripts; `init_db()` applies them at startup |
+| `auth.py` | Password hashing, signed session cookies, role guards |
+| `seed_users.py` | One-time bootstrap: locations, admin, orthodontists |
 | `inference.py` | YOLO wrapper + FDI/Universal tooth numbering |
 | `annotator.py` | Burns arrows and tooth labels onto the radiograph |
 | `referral.py` | Referral/prescription PDF with embedded e-signature |
@@ -102,8 +145,10 @@ the portal keeps working after the archive is rotated.
 - Re-approving a case writes a **new** referral PDF and leaves the old file on
   disk. Prior slips are retained by design (audit trail), but nothing prunes
   them.
-- There is **no authentication**. The doctor's name is a free-text field, not a
-  verified identity. Do not expose this beyond a trusted network without adding
-  auth.
+- Sessions are signed cookies. Set `SESSION_SECRET_KEY` in any real deployment —
+  without it a random key is generated at import, so sessions do not survive a
+  restart and do not work across multiple workers.
+- `seed_users.py --demo` creates **demo credentials** (`admin`/`admin`). Change
+  them before this touches real patient data.
 - SQLite suits the stated load (2–4 doctors, ~150 images/day). Concurrent
   writes from several watcher processes are not supported.

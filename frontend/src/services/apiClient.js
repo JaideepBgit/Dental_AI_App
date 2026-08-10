@@ -144,6 +144,49 @@ export function createApiClient({ transport, baseUrl = API_URL } = {}) {
       unwrap(http.get('/api/admin/audit', { params: { limit } }),
         'Could not load the activity log'),
 
+    // --- reusable e-signatures (per-clinician, self-service) ---
+
+    fetchSignatures: () =>
+      unwrap(http.get('/api/signatures'), 'Could not load your signatures'),
+
+    /**
+     * Save a reusable signature from EITHER an uploaded image file OR a drawn
+     * data URL — pass one, not both. The first one saved becomes the default.
+     */
+    createSignature: ({ label, file, imageData, makeDefault }) => {
+      const body = new FormData();
+      body.append('label', label);
+      if (file) body.append('file', file);
+      if (imageData) body.append('image_data', imageData);
+      body.append('make_default', String(Boolean(makeDefault)));
+      return unwrap(http.post('/api/signatures', body), 'Could not save the signature');
+    },
+
+    updateSignature: (id, { label, makeDefault }) =>
+      unwrap(
+        http.patch(`/api/signatures/${id}`, form({
+          label,
+          make_default: makeDefault === undefined ? undefined : String(makeDefault),
+        })),
+        'Could not update the signature',
+      ),
+
+    deleteSignature: (id) =>
+      unwrap(http.delete(`/api/signatures/${id}`), 'Could not delete the signature'),
+
+    /** Signature image URL, for <img>. Session-scoped and never cached. */
+    signatureImageUrl: (id) => `${baseUrl}/api/signatures/${id}/image`,
+
+    // --- review locks (shared queue) ---
+
+    /** Take the review lock so colleagues cannot work this case concurrently. */
+    claimXray: (id) =>
+      unwrap(http.post(`/api/xray/${id}/claim`), 'Could not claim the case'),
+
+    /** Give the case back to the shared queue. Admins can force-release. */
+    releaseXray: (id) =>
+      unwrap(http.post(`/api/xray/${id}/release`), 'Could not release the case'),
+
     // --- admin: case assignment ---
 
     /** Assign one case. Pass userId null/undefined to unassign it. */
@@ -242,15 +285,19 @@ export function createApiClient({ transport, baseUrl = API_URL } = {}) {
      * come from the authenticated session on the server, so the client cannot
      * sign as somebody else. `decision` is EXTRACT | REFER | MONITOR |
      * NO_ACTION_NEEDED. Pass amendsId to correct an already-signed case.
+     *
+     * Sign with EITHER signatureId (one of the clinician's saved signatures,
+     * the normal path) OR a freshly drawn `signature` data URL.
      */
-    approveCase: ({ xrayId, decision, prescriptionText, signature, extractionIds,
-                    dictationText, reviewedAt, amendsId }) =>
+    approveCase: ({ xrayId, decision, prescriptionText, signature, signatureId,
+                    extractionIds, dictationText, reviewedAt, amendsId }) =>
       unwrap(
         http.post('/api/approve', form({
           xray_id: xrayId,
           decision,
           prescription_text: prescriptionText,
           signature,
+          signature_id: signatureId,
           extraction_ids: JSON.stringify(extractionIds || []),
           dictation_text: dictationText,
           reviewed_at: reviewedAt,

@@ -33,7 +33,12 @@ const SignaturePad = forwardRef((props, ref) => {
   }, []);
 
   return (
-    <div ref={wrapperRef} style={{ width: '100%', height: CANVAS_HEIGHT, lineHeight: 0 }}>
+    <div
+      ref={wrapperRef}
+      style={{
+        width: '100%', height: CANVAS_HEIGHT, lineHeight: 0, touchAction: 'none',
+      }}
+    >
       {width > 0 && (
         <SignatureCanvas
           ref={sigCanvas}
@@ -41,7 +46,14 @@ const SignaturePad = forwardRef((props, ref) => {
           canvasProps={{
             width,
             height: CANVAS_HEIGHT,
-            style: { cursor: 'crosshair', display: 'block' },
+            style: {
+              cursor: 'crosshair',
+              display: 'block',
+              // Without this a finger drag is claimed by the scroller -- on a
+              // tablet the doctor pans the sheet instead of signing, which is
+              // the one action on this screen that cannot be worked around.
+              touchAction: 'none',
+            },
           }}
         />
       )}

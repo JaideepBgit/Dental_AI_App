@@ -28,8 +28,9 @@ import theme from '../theme';
 import Viewer, { ViewerLegend } from '../components/Viewer';
 import SegmentationViewer from '../components/SegmentationViewer';
 import DentitionViewer from '../components/DentitionViewer';
+import M3Viewer from '../components/M3Viewer';
 import VoiceDictator from '../components/VoiceDictator';
-import SignaturePad from '../components/SignaturePad';
+import SignaturePicker from '../components/SignaturePicker';
 import FindingsList from '../components/FindingsList';
 import StatusChip from '../components/StatusChip';
 import { useApi } from '../services/ApiProvider';
@@ -68,8 +69,10 @@ export default function CaseReviewPage() {
     setDictationText,
     amendsId, startAmendment,
     approve, reload,
-    toothDetections, segDetections, hierDetections,
-    maskCount, hierThirdMolars, prescription, isApproved, isPending,
+    claim, release,
+    toothDetections, segDetections, hierDetections, m3Detections,
+    maskCount, hierThirdMolars, m3ThirdMolars, prescription, isApproved, isPending,
+    claimedByMe, claimedBy, claimedById,
   } = useCaseDetail({ api, xrayId: id });
 
   const [hoveredId, setHoveredId] = useState(null);
@@ -77,14 +80,43 @@ export default function CaseReviewPage() {
   const [viewTab, setViewTab] = useState('detection');
   const [toast, setToast] = useState(null);
   const [notesOpen, setNotesOpen] = useState(false);
+  const [lockBusy, setLockBusy] = useState(false);
   const signatureRef = useRef(null);
 
-  const handleApprove = async () => {
-    const signature = signatureRef.current && !signatureRef.current.isEmpty()
-      ? signatureRef.current.toDataURL()
-      : '';
+  // Signing needs the review lock. An amendment on an already-signed case also
+  // needs one, since signing released the previous claim.
+  const needsClaim = canPrescribe && !claimedByMe;
+  const heldByColleague = Boolean(claimedById) && !claimedByMe;
 
-    const outcome = await approve({ signature });
+  // Everything that feeds a signature is inert until the lock is held. Gating
+  // only the sign button would let a doctor tick teeth, dictate a note and draw a
+  // signature before being refused at submit -- the whole review wasted.
+  // Already-signed cases stay editable so an amendment can be prepared.
+  const formLocked = saving || !canPrescribe || (needsClaim && !isApproved);
+
+  const handleClaim = async () => {
+    setLockBusy(true);
+    const outcome = await claim();
+    setLockBusy(false);
+    setToast(outcome.ok
+      ? { severity: 'success', message: 'Case claimed — it is yours to review.' }
+      : { severity: 'warning', message: outcome.message });
+  };
+
+  const handleRelease = async () => {
+    setLockBusy(true);
+    const outcome = await release();
+    setLockBusy(false);
+    setToast(outcome.ok
+      ? { severity: 'info', message: 'Released. The case is back in the shared queue.' }
+      : { severity: 'warning', message: outcome.message });
+  };
+
+  const handleApprove = async () => {
+    // Exactly one of signatureId / signature comes back, per the server contract.
+    const { signatureId, signature } = signatureRef.current?.getSignature() || {};
+
+    const outcome = await approve({ signature, signatureId });
     if (!outcome.ok) {
       setToast({ severity: 'warning', message: outcome.message });
       return;
@@ -190,13 +222,37 @@ export default function CaseReviewPage() {
             </Alert>
           )}
 
+          {/* Review lock state. The queue is shared, so who holds a case is the
+              first thing a doctor opening it needs to know. */}
+          {canPrescribe && !isApproved && heldByColleague && (
+            <Alert severity="warning" icon={<LockIcon fontSize="small" />} sx={{ borderRadius: 2 }}>
+              <strong>{claimedBy}</strong> is reviewing this case. You can read it,
+              but not sign it. It returns to the shared queue when they release or
+              sign it.
+            </Alert>
+          )}
+
+          {canPrescribe && !isApproved && !claimedById && (
+            <Alert severity="info" sx={{ borderRadius: 2 }}>
+              This case is unclaimed. Claim it to sign a decision — that also stops
+              a colleague working it at the same time.
+            </Alert>
+          )}
+
+          {canPrescribe && !isApproved && claimedByMe && (
+            <Alert severity="success" sx={{ borderRadius: 2 }}>
+              You are reviewing this case. Colleagues see it as under review until
+              you sign or release it.
+            </Alert>
+          )}
+
           <FindingsList
             detections={toothDetections}
             extractionIds={extractionIds}
             onToggle={toggleExtraction}
             hoveredId={hoveredId}
             onHover={setHoveredId}
-            disabled={saving}
+            disabled={formLocked}
           />
 
           <Divider />
@@ -211,7 +267,7 @@ export default function CaseReviewPage() {
                 <FormControlLabel
                   key={opt.value}
                   value={opt.value}
-                  disabled={saving || !canPrescribe}
+                  disabled={formLocked}
                   control={<Radio size="small" />}
                   label={
                     <Box>
@@ -241,56 +297,96 @@ export default function CaseReviewPage() {
               setDictationText(next);
             }}
             whisperReady
-            disabled={saving || !canPrescribe}
+            disabled={formLocked}
           />
 
           <Box>
-            <Stack
-              direction="row"
-              sx={{ justifyContent: 'space-between', alignItems: 'center', mb: 0.5, minHeight: 32 }}
-            >
-              <Typography variant="subtitle1">E-signature</Typography>
-              <Button
-                size="small"
-                onClick={() => signatureRef.current?.clear()}
-                color="inherit"
-                disabled={saving}
-              >
-                Clear
-              </Button>
-            </Stack>
+            <Typography variant="subtitle1" sx={{ mb: 0.5 }}>E-signature</Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
               Sign to authorise this decision. Your name, location and the
               signing time are recorded from your account.
             </Typography>
-            <Box
-              sx={{
-                border: '1px solid', borderColor: 'divider', borderRadius: 2,
-                bgcolor: '#f9fafb', overflow: 'hidden',
-              }}
-            >
-              <SignaturePad ref={signatureRef} />
-            </Box>
+            <SignaturePicker ref={signatureRef} disabled={formLocked} />
           </Box>
         </Stack>
 
-        <Box sx={{ pt: 3, mt: 'auto', flexShrink: 0 }}>
-          <Button
-            variant="contained"
-            color="primary"
-            fullWidth
-            size="large"
-            startIcon={saving ? <CircularProgress size={16} color="inherit" /> : <SaveIcon />}
-            onClick={handleApprove}
-            disabled={saving || loading || !canPrescribe || (isApproved && !amendsId)}
-            disableElevation
-            sx={{ py: 1.25 }}
-          >
-            {saving ? 'Signing…'
-              : amendsId ? 'Sign amendment'
-                : isApproved ? 'Already signed'
-                  : 'Sign & record decision'}
-          </Button>
+        <Box
+          sx={{
+            pt: 3,
+            mt: 'auto',
+            flexShrink: 0,
+            // Only in the bottom sheet: the desktop panel has no home indicator
+            // to clear, and the inset resolves to 0 there anyway.
+            ...(isMobile && { pb: 'env(safe-area-inset-bottom)' }),
+          }}
+        >
+          {/* Claim gate. Signing requires the review lock, so the button that
+              takes it is shown in the same place the sign button would be --
+              a doctor should not fill in the form only to be refused at submit. */}
+          {canPrescribe && !isApproved && needsClaim && (
+            <Button
+              variant="contained"
+              color="primary"
+              fullWidth
+              size="large"
+              startIcon={lockBusy ? <CircularProgress size={16} color="inherit" /> : <LockIcon />}
+              onClick={handleClaim}
+              disabled={lockBusy || loading || heldByColleague}
+              disableElevation
+              sx={{ py: 1.25 }}
+            >
+              {lockBusy ? 'Claiming…'
+                : heldByColleague ? `Under review by ${claimedBy}`
+                  : 'Claim case to review'}
+            </Button>
+          )}
+
+          {canPrescribe && (!needsClaim || isApproved) && (
+            <Button
+              variant="contained"
+              color="primary"
+              fullWidth
+              size="large"
+              startIcon={saving ? <CircularProgress size={16} color="inherit" /> : <SaveIcon />}
+              onClick={handleApprove}
+              disabled={saving || loading || (isApproved && !amendsId)
+                        || (amendsId && needsClaim)}
+              disableElevation
+              sx={{ py: 1.25 }}
+            >
+              {saving ? 'Signing…'
+                : amendsId ? 'Sign amendment'
+                  : isApproved ? 'Already signed'
+                    : 'Sign & record decision'}
+            </Button>
+          )}
+
+          {/* Amending a signed case needs the lock back, since signing dropped it. */}
+          {canPrescribe && isApproved && amendsId && needsClaim && (
+            <Button
+              fullWidth
+              size="small"
+              startIcon={<LockIcon />}
+              onClick={handleClaim}
+              disabled={lockBusy || heldByColleague}
+              sx={{ mt: 1 }}
+            >
+              {heldByColleague ? `Under review by ${claimedBy}` : 'Claim to amend'}
+            </Button>
+          )}
+
+          {claimedByMe && !isApproved && (
+            <Button
+              fullWidth
+              size="small"
+              color="inherit"
+              onClick={handleRelease}
+              disabled={lockBusy || saving}
+              sx={{ mt: 1 }}
+            >
+              Release without signing
+            </Button>
+          )}
         </Box>
       </CardContent>
     </Card>
@@ -483,6 +579,25 @@ export default function CaseReviewPage() {
                     </Stack>
                   }
                 />
+                <Tab
+                  value="m3"
+                  label={
+                    <Stack sx={{ alignItems: 'center' }} direction="row" spacing={0.75}>
+                      <span>Wisdom (M3)</span>
+                      {m3ThirdMolars > 0 && (
+                        <Chip
+                          size="small"
+                          label={m3ThirdMolars}
+                          sx={{
+                            height: 18, fontSize: '0.65rem',
+                            bgcolor: '#22c55e', color: 'common.white',
+                            '& .MuiChip-label': { px: 0.6 },
+                          }}
+                        />
+                      )}
+                    </Stack>
+                  }
+                />
               </Tabs>
 
               {viewTab === 'detection' && (
@@ -541,6 +656,32 @@ export default function CaseReviewPage() {
                   />
                 )
               )}
+
+              {viewTab === 'm3' && (
+                m3Detections.length === 0 ? (
+                  <Alert severity="info" sx={{ borderRadius: 2 }}>
+                    The wisdom-tooth model returned no teeth for this radiograph.
+                    Cases analysed before it was installed have no M3 rows —
+                    re-upload the image to run it.
+                  </Alert>
+                ) : (
+                  <>
+                    <Alert severity="info" sx={{ mb: 2, borderRadius: 2 }}>
+                      Candidate model, shown for comparison against the Detection
+                      tab. It names each wisdom tooth directly, so no tooth number
+                      here is a geometric estimate. Prescriptions still follow the
+                      Detection tab.
+                    </Alert>
+                    <M3Viewer
+                      imageUrl={api.xrayImageUrl(caseData.id)}
+                      detections={m3Detections}
+                      isAnalyzing={loading}
+                      hoveredId={hoveredId}
+                      onHover={setHoveredId}
+                    />
+                  </>
+                )
+              )}
             </CardContent>
           </Card>
         </Grid>
@@ -560,18 +701,25 @@ export default function CaseReviewPage() {
 
       {isMobile && (
         <>
-          <Button
-            variant="contained"
-            startIcon={<EditNoteIcon />}
-            onClick={() => setNotesOpen(true)}
-            sx={{
-              position: 'fixed', bottom: 24, right: 24, zIndex: 1000,
-              borderRadius: 8, px: 2.5, py: 1.25,
-            }}
-          >
-            Sign off
-            {extractionIds.length > 0 && ` (${extractionIds.length})`}
-          </Button>
+          {/* Hidden while the sheet is open: at 88vh the sheet's own sign button
+              lands under this one, so leaving it up puts a second, different
+              action on top of the primary one. */}
+          {!notesOpen && (
+            <Button
+              variant="contained"
+              startIcon={<EditNoteIcon />}
+              onClick={() => setNotesOpen(true)}
+              sx={{
+                position: 'fixed', right: 24, zIndex: 1000,
+                // Clear the iOS home indicator, which otherwise sits over it.
+                bottom: 'calc(24px + env(safe-area-inset-bottom))',
+                borderRadius: 8, px: 2.5, py: 1.25,
+              }}
+            >
+              Sign off
+              {extractionIds.length > 0 && ` (${extractionIds.length})`}
+            </Button>
+          )}
 
           <Drawer
             anchor="bottom"
@@ -580,7 +728,12 @@ export default function CaseReviewPage() {
             slotProps={{
               paper: {
                 sx: {
-                  height: '88vh', borderTopLeftRadius: 24, borderTopRightRadius: 24,
+                  // dvh, not vh: on mobile Safari vh is measured against the
+                  // URL-bar-collapsed viewport, so the sheet's last control sits
+                  // below the fold until the user scrolls the browser chrome away.
+                  height: '88dvh',
+                  borderTopLeftRadius: 24,
+                  borderTopRightRadius: 24,
                   bgcolor: 'background.default',
                 },
               },

@@ -30,16 +30,24 @@ def api_with_frontend(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'cache.db'}")
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SMILEAI_FRONTEND_DIST", str(dist))
+    monkeypatch.setenv("SESSION_SECRET_KEY", "test-only-fixed-secret-do-not-ship")
 
-    for module in ("main", "db"):
+    for module in ("main", "db", "auth"):
         sys.modules.pop(module, None)
 
     from fastapi.testclient import TestClient
     import db as db_module
     import main as main_module
 
+    from conftest import _make_user, _sign_in
+
     db_module.init_db()
     with TestClient(main_module.app) as client:
+        # Signed in because one test here checks that an /api response is not
+        # given asset caching headers, and that route needs a session first.
+        client.db_module = db_module
+        _make_user(client, "admin@test.local", db_module.ROLE_ADMIN, "Test Admin")
+        _sign_in(client, "admin@test.local")
         yield client
 
 

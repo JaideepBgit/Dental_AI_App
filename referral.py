@@ -23,6 +23,8 @@ from reportlab.platypus import (
     Image as RLImage, KeepTogether,
 )
 
+from branding import PRACTICE_TAGLINE, practice_name
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_OUTPUT_DIR = os.path.join(BASE_DIR, "output_prescriptions")
 
@@ -105,13 +107,15 @@ def generate_referral(
         output_path, pagesize=letter,
         leftMargin=0.6 * inch, rightMargin=0.6 * inch,
         topMargin=0.55 * inch, bottomMargin=0.55 * inch,
-        title=f"Referral - {patient_name}", author=doctor_name or "SmileAI",
+        title=f"Referral - {patient_name}", author=doctor_name or practice_name(),
     )
     avail = doc.width
     story = []
 
     story.append(Paragraph("DENTAL REFERRAL &amp; PRESCRIPTION NOTE", st["title"]))
-    story.append(Paragraph("SmileAI Portal — panoramic radiograph review", st["subtitle"]))
+    story.append(Paragraph(
+        f"{practice_name()} — {PRACTICE_TAGLINE}", st["subtitle"],
+    ))
 
     meta = [
         [Paragraph("<b>Patient</b>", st["cell"]), Paragraph(patient_name or "—", st["cell"]),

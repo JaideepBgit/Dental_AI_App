@@ -54,7 +54,9 @@ class TestQueueContents:
         make_case(name="Patient One", mrn="MRN-A")
         make_case(name="Patient Three", mrn="MRN-B")
 
-        body = api.get("/api/queue?search=patient").json()
+        # "One" rather than "patient": the latter is a substring of both names, so
+        # it cannot demonstrate that the filter narrows anything.
+        body = api.get("/api/queue?search=One").json()
         assert body["count"] == 1
         assert body["items"][0]["patient_name"] == "Patient One"
 
@@ -117,6 +119,8 @@ class TestQueueStats:
             "pending": 0, "awaiting_review": 0, "approved": 0,
             "failed": 0, "total": 0, "third_molars_flagged": 0,
             "patients": 0,
+            # Admin-only: how many cases nobody has been directed to yet.
+            "unassigned": 0,
         }
 
     def test_stats_counts_third_molars(self, api, make_case):

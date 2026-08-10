@@ -23,8 +23,10 @@ function renderApp({ route = '/', api = makeFakeApi(), user = FAKE_ADMIN } = {})
   return renderWithProviders(<AppRoutes />, { route, api, user });
 }
 
+// The rail's own contents and order are covered in adminNav.test.jsx. Patients
+// and Referrals are Administration tabs for an admin, not rail destinations.
 const DESTINATIONS = [
-  'Dashboard', 'New Case', 'Review Queue', 'Patients', 'Referrals', 'Settings',
+  'Dashboard', 'Review Queue', 'New Case', 'Settings', 'Administration',
 ];
 
 describe('app shell navigation', () => {
@@ -312,14 +314,14 @@ describe('QueuePage', () => {
 describe('role scoping', () => {
   // An orthodontist works only the cases an admin assigned to them, so the
   // practice-wide screens must be unreachable and the intake affordances absent.
-  const DOCTOR_ONLY = ['Review Queue', 'Referrals', 'Settings'];
-  const ADMIN_ONLY = ['Dashboard', 'New Case', 'Patients', 'Administration'];
+  const DOCTOR_NAV = ['Review Queue', 'Referrals', 'Settings'];
+  const ADMIN_ONLY = ['Dashboard', 'New Case', 'Administration'];
 
   it('shows a doctor only their own destinations', async () => {
     renderApp({ route: '/queue', user: FAKE_ORTHODONTIST });
 
     const nav = await screen.findByRole('navigation');
-    DOCTOR_ONLY.forEach((label) => {
+    DOCTOR_NAV.forEach((label) => {
       expect(within(nav).getByText(label)).toBeInTheDocument();
     });
     ADMIN_ONLY.forEach((label) => {
@@ -327,11 +329,11 @@ describe('role scoping', () => {
     });
   });
 
-  it('shows an admin every destination including Administration', async () => {
+  it('shows an admin the practice-wide destinations including Administration', async () => {
     renderApp({ route: '/', user: FAKE_ADMIN });
 
     const nav = await screen.findByRole('navigation');
-    [...DOCTOR_ONLY, ...ADMIN_ONLY].forEach((label) => {
+    ['Review Queue', 'Settings', ...ADMIN_ONLY].forEach((label) => {
       expect(within(nav).getByText(label)).toBeInTheDocument();
     });
   });
@@ -339,14 +341,14 @@ describe('role scoping', () => {
   it('sends a doctor from the dashboard route to their queue', async () => {
     renderApp({ route: '/', user: FAKE_ORTHODONTIST });
 
-    expect(await screen.findByText(/cases assigned to you/i)).toBeInTheDocument();
+    expect(await screen.findByText(/the shared queue/i)).toBeInTheDocument();
   });
 
   it('redirects a doctor away from an admin-only route', async () => {
     renderApp({ route: '/patients', user: FAKE_ORTHODONTIST });
 
     // Bounced to the queue rather than shown the patient directory.
-    expect(await screen.findByText(/cases assigned to you/i)).toBeInTheDocument();
+    expect(await screen.findByText(/the shared queue/i)).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: /^patients$/i })).toBeNull();
   });
 

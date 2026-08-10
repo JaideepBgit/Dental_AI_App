@@ -40,9 +40,16 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 #                         'Q3_tooth_8_*' — no geometry needed to identify it,
 #                         and a first molar can be told apart from a wisdom
 #                         tooth instead of forced into one of four labels.
+#   best_dental_m3.pt     5 classes, {Tooth, M3_UR, M3_UL, M3_LL, M3_LR}. The
+#                         retrained detector: same question as best_dental_model
+#                         but it names WHICH wisdom tooth, so no geometric
+#                         fallback is needed. Runs behind the Wisdom (M3) tab
+#                         for side-by-side comparison against the 2-class
+#                         detector; once trusted it replaces it in Detection.
 DEFAULT_WEIGHTS = os.path.join(BASE_DIR, "models", "best_dental_model.pt")
 DEFAULT_SEG_WEIGHTS = os.path.join(BASE_DIR, "models", "best_dental_seg.pt")
 DEFAULT_HIER_WEIGHTS = os.path.join(BASE_DIR, "models", "best_dental_hier.pt")
+DEFAULT_M3_WEIGHTS = os.path.join(BASE_DIR, "models", "best_dental_m3.pt")
 
 # Panoramic radiographs are shot facing the patient: image-left is the
 # patient's RIGHT side. Quadrant naming below follows patient anatomy.
@@ -78,8 +85,22 @@ _THIRD_MOLAR_FDI = {18, 28, 38, 48}
 # occurs on canines and premolars, so it is neither necessary nor sufficient.
 _THIRD_MOLAR_CLASS_RE = re.compile(r"\b(3rd|third)[\s_-]*molar\b", re.IGNORECASE)
 
+# 5-class M3 detector: 'M3_LL' names the wisdom tooth's quadrant outright, so it
+# resolves to an FDI code with no geometry and no positional ranking. UR/UL/LL/LR
+# is patient anatomy, matching QUADRANT_* above; every one is position 8.
+_M3_CLASS_TO_FDI = {
+    "M3_UR": 18,
+    "M3_UL": 28,
+    "M3_LL": 38,
+    "M3_LR": 48,
+}
+
 
 def _class_says_third_molar(class_name: str) -> bool:
+    # The 5-class detector's M3_* names assert a wisdom tooth without using the
+    # words, so they are checked separately from the '3rd molar' text pattern.
+    if str(class_name or "").strip().upper() in _M3_CLASS_TO_FDI:
+        return True
     return bool(_THIRD_MOLAR_CLASS_RE.search(class_name or ""))
 
 
@@ -93,9 +114,12 @@ _HIER_CLASS_RE = re.compile(r"\bQ([1-4])_tooth_([1-8])(?![0-9])", re.IGNORECASE)
 
 
 def _extract_fdi_from_class(class_name: str) -> Optional[int]:
-    """Pull an FDI code out of a class name like 'tooth_38' or 'Q3_tooth_8'."""
+    """Pull an FDI code out of 'tooth_38', 'Q3_tooth_8', or 'M3_LL'."""
     if not FDI_FROM_CLASS_NAMES or not class_name:
         return None
+    m3 = _M3_CLASS_TO_FDI.get(str(class_name).strip().upper())
+    if m3 is not None:
+        return m3
     hier = _HIER_CLASS_RE.search(class_name)
     if hier:
         return int(hier.group(1)) * 10 + int(hier.group(2))
@@ -420,6 +444,7 @@ class DentalInference:
 _engine: Optional[DentalInference] = None
 _seg_engine: Optional[DentalInference] = None
 _hier_engine: Optional[DentalInference] = None
+_m3_engine: Optional[DentalInference] = None
 
 
 def _use_gpu() -> bool:
@@ -471,16 +496,113 @@ def get_hier_engine() -> Optional[DentalInference]:
     return _hier_engine
 
 
+def get_m3_engine() -> Optional[DentalInference]:
+    """
+    M3 engine: the 5-class retrained detector behind the Wisdom (M3) tab.
+
+    Returns None when its weights are absent, like the seg and hier engines —
+    this tab is a comparison surface against the Detection tab, so it must never
+    be able to fail a case.
+    """
+    global _m3_engine
+    if _m3_engine is None:
+        path = os.environ.get("SMILEAI_M3_MODEL_PATH", DEFAULT_M3_WEIGHTS)
+        if not os.path.exists(path):
+            return None
+        _m3_engine = DentalInference(model_path=path, use_gpu=_use_gpu())
+    return _m3_engine
+
+
+# Seg classes that describe a condition OF a tooth. Only these are attached to a
+# tooth box. 'Mandibular Canal' and 'maxillary sinus' are landmarks that legally
+# overlap many teeth, and 'Missing teeth' marks a gap where no tooth was
+# detected, so none of them say anything about the tooth they overlap.
+_TOOTH_LEVEL_SEG_CLASSES = {
+    "caries",
+    "crown",
+    "filling",
+    "implant",
+    "periapical lesion",
+    "retained root",
+    "root canal treatment",
+    "root piece",
+    "impacted tooth",
+}
+
+# A finding must cover this much of its own area inside the tooth box to be
+# attributed to it. Containment, not IoU: a caries lesion is far smaller than the
+# tooth, so IoU stays low even at full containment and would reject every match.
+_FUSION_CONTAINMENT = 0.5
+
+
+def _containment(inner: list, outer: list) -> float:
+    """Fraction of `inner`'s box area that lies inside `outer`."""
+    ix1 = max(inner[0], outer[0])
+    iy1 = max(inner[1], outer[1])
+    ix2 = min(inner[2], outer[2])
+    iy2 = min(inner[3], outer[3])
+    if ix2 <= ix1 or iy2 <= iy1:
+        return 0.0
+    intersection = (ix2 - ix1) * (iy2 - iy1)
+    inner_area = (inner[2] - inner[0]) * (inner[3] - inner[1])
+    if inner_area <= 0:
+        return 0.0
+    return intersection / inner_area
+
+
+def _attach_findings_to_teeth(tooth_dets: list, seg_dets: list) -> None:
+    """
+    Attach overlapping pathology findings to each tooth box, in place.
+
+    This is a spatial JOIN, not a second inference pass: both models still run
+    independently on the full image, and this correlates their outputs
+    afterwards. It exists because the seg model has no concept of tooth identity
+    (a caries mask is just a blob) while the detector has no concept of disease.
+    Joined, the Detection tab can say "tooth 38, with caries" instead of making
+    the doctor eyeball two tabs and match them up by position.
+
+    Deliberately display-only. Overlap is correlation, not diagnosis: a lesion
+    inside a tooth's box is not proof it belongs to that tooth, so this never
+    sets needs_extraction or impaction_type. Those stay the doctor's call, per
+    the module docstring.
+    """
+    if not tooth_dets or not seg_dets:
+        return
+
+    candidates = [
+        d for d in seg_dets
+        if str(d.get("class_name", "")).strip().lower() in _TOOTH_LEVEL_SEG_CLASSES
+    ]
+
+    for tooth in tooth_dets:
+        findings = []
+        for finding in candidates:
+            share = _containment(finding["bbox"], tooth["bbox"])
+            if share >= _FUSION_CONTAINMENT:
+                findings.append({
+                    "class_name": finding["class_name"],
+                    "confidence": finding["confidence"],
+                    "containment": round(share, 3),
+                })
+        # Strongest evidence first, so a truncated UI list drops the weakest.
+        findings.sort(key=lambda f: f["confidence"], reverse=True)
+        tooth["findings"] = findings
+
+
 def predict_all(image_path: str, conf: float = 0.25, iou: float = 0.45) -> dict:
     """
-    Run both models over one radiograph and return a single detection list.
+    Run every installed model over one radiograph and return a single list.
 
-    Each detection carries a "source" of 'detect' or 'segment' so the two tabs
-    can show their own model's output without either polluting the other:
-    Detection filters to 3rd molars, Segmentation filters to masked findings.
+    Each detection carries a "source" of 'detect', 'segment', 'hier' or 'm3' so
+    each tab shows its own model's output without any of them polluting another.
 
-    The seg model is best-effort. If it is missing or fails, the case still
-    completes with detector output rather than erroring out.
+    Only the detector is required. The seg, hier and m3 models are best-effort:
+    if one is missing or fails, the case still completes rather than erroring
+    out, minus that tab.
+
+    After all passes, seg findings are spatially joined onto tooth boxes so the
+    Detection tab can name a tooth's pathology. That join is display-only and
+    never sets needs_extraction.
     """
     result = get_engine().predict(image_path, conf=conf, iou=iou)
     for det in result["detections"]:
@@ -520,7 +642,33 @@ def predict_all(image_path: str, conf: float = 0.25, iou: float = 0.45) -> dict:
         except Exception as exc:
             print(f"[inference] hierarchical pass failed, continuing without it: {exc}")
 
+    # Fourth pass: the 5-class retrained detector. Same question as the first
+    # pass, but its classes name which wisdom tooth, so the geometric fallback
+    # never fires. Kept as its own source so the two can be compared in the UI.
+    m3_model = None
+    m3 = get_m3_engine()
+    if m3 is not None:
+        try:
+            m3_result = m3.predict(image_path, conf=conf, iou=iou)
+            m3_model = m3_result["model"]
+            for det in m3_result["detections"]:
+                det["source"] = "m3"
+                result["detections"].append(det)
+        except Exception as exc:
+            print(f"[inference] m3 pass failed, continuing without it: {exc}")
+
+    # Join pathology onto teeth once every model has run. Display-only: see
+    # _attach_findings_to_teeth. Applied to the detector and M3 rows (both are
+    # teeth) but not to hier rows, whose classes already carry their own disease
+    # token from the model itself.
+    seg_rows = [d for d in result["detections"] if d.get("source") == "segment"]
+    for src in ("detect", "m3"):
+        _attach_findings_to_teeth(
+            [d for d in result["detections"] if d.get("source") == src], seg_rows
+        )
+
     result["num_detections"] = len(result["detections"])
     result["seg_model"] = seg_model
     result["hier_model"] = hier_model
+    result["m3_model"] = m3_model
     return result

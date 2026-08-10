@@ -5,16 +5,16 @@ Idempotent: re-running skips anything already present rather than duplicating it
 Existing passwords are never overwritten -- an operator re-running the seed must
 not clobber a credential somebody is already using.
 
-Login names are bare usernames ('admin', 'doctor'), not email addresses, so they
-are quick to type during a demo. The column is still called `email` since it
-accepts either.
+Login names are bare usernames ('admin', 'patrick', 'arcaro'), not email
+addresses, so they are quick to type. The column is still called `email` since
+it accepts either.
 
-    python seed_users.py --demo                   # admin + two doctors (simple)
+    python seed_users.py --demo                   # the practice, simple passwords
     python seed_users.py --admin-password '...'   # choose the admin password
     python seed_users.py --reset                  # rewrite the demo passwords
 
-WARNING: the defaults here are demo credentials -- 'admin'/'admin'. Replace them
-before this touches real patient data.
+WARNING: --demo issues passwords that match the username. Replace them before
+this touches real patient data.
 """
 
 import argparse
@@ -26,7 +26,23 @@ from auth import hash_password
 from db import (Location, ROLE_ADMIN, ROLE_ORTHODONTIST, SessionLocal, User,
                 init_db)
 
-DEFAULT_LOCATIONS = ["Main Practice", "Northside Clinic"]
+DEFAULT_LOCATIONS = ["Passion Dental"]
+
+# Practice-wide access lives in its own account rather than on a clinician's
+# login. The doctors treat patients; whoever runs the practice signs in as the
+# administrator to upload cases, assign them and manage logins. Keeping the two
+# separate means a doctor's day-to-day session cannot reach the whole practice.
+DEFAULT_ADMIN_LOGIN = "admin"
+DEFAULT_ADMIN_NAME = "Practice Administrator"
+DEFAULT_ADMIN_ROLE = ROLE_ADMIN
+
+#: (login, full name, role) -- the practice's clinicians. Full names are what
+#: print on referral PDFs, so they are written the way a patient should read
+#: them.
+PRACTICE_DOCTORS = [
+    ("patrick", "Dr Patrick", ROLE_ORTHODONTIST),
+    ("arcaro", "Dr Arcaro", ROLE_ORTHODONTIST),
+]
 
 
 def _random_password(n: int = 14) -> str:
@@ -80,13 +96,14 @@ def ensure_user(db, email, full_name, role, password, location=None, reset=False
 
 def main():
     ap = argparse.ArgumentParser(description="Seed practice users and locations")
-    ap.add_argument("--admin-email", default="admin",
-                    help="Admin login name (default: admin)")
-    ap.add_argument("--admin-name", default="Practice Administrator")
+    ap.add_argument("--admin-email", default=DEFAULT_ADMIN_LOGIN,
+                    help=f"Admin login name (default: {DEFAULT_ADMIN_LOGIN})")
+    ap.add_argument("--admin-name", default=DEFAULT_ADMIN_NAME)
     ap.add_argument("--admin-password", default=None,
-                    help="Omit to use 'admin' with --demo, else a random one.")
+                    help="Omit for a password matching the login with --demo, "
+                         "else a random one.")
     ap.add_argument("--demo", action="store_true",
-                    help="Create simple demo logins: admin/admin, doctor/doctor")
+                    help="Issue simple passwords matching each login name")
     ap.add_argument("--reset", action="store_true",
                     help="Overwrite passwords of existing users (and reactivate them)")
     args = ap.parse_args()
@@ -99,25 +116,25 @@ def main():
         print("\n[seed] Locations")
         locations = [ensure_location(db, n) for n in DEFAULT_LOCATIONS]
 
-        print("\n[seed] Administrator")
-        # With --demo the password matches the username so it is trivial to
+        # With --demo each password matches its login so it is trivial to
         # recall; without it, a random password is generated instead.
-        pw = args.admin_password or ("admin" if args.demo else _random_password())
+        print("\n[seed] Administrator")
+        admin_pw = args.admin_password or (
+            args.admin_email if args.demo else _random_password()
+        )
         issued = ensure_user(db, args.admin_email, args.admin_name,
-                             ROLE_ADMIN, pw, locations[0], reset=args.reset)
+                             DEFAULT_ADMIN_ROLE, admin_pw, locations[0],
+                             reset=args.reset)
         if issued:
-            created.append(("ADMIN", args.admin_email, issued))
+            created.append((DEFAULT_ADMIN_ROLE, args.admin_email, issued))
 
-        if args.demo:
-            print("\n[seed] Orthodontists")
-            for username, name, loc in [
-                ("doctor", "Doctor One", locations[0]),
-                ("doctor2", "Doctor Two", locations[1]),
-            ]:
-                issued = ensure_user(db, username, name, ROLE_ORTHODONTIST,
-                                     username, loc, reset=args.reset)
-                if issued:
-                    created.append(("ORTHODONTIST", username, issued))
+        print("\n[seed] Clinicians")
+        for login, name, role in PRACTICE_DOCTORS:
+            pw = login if args.demo else _random_password()
+            issued = ensure_user(db, login, name, role, pw,
+                                 locations[0], reset=args.reset)
+            if issued:
+                created.append((role, login, issued))
 
         if created:
             print("\n" + "=" * 58)

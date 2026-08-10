@@ -9,6 +9,18 @@ import { useState } from 'react';
  * for extraction — the model never sets this. Rows are keyed by detection id so
  * the selection survives re-renders.
  */
+
+// Pathology joined onto a tooth from the segmentation model. Muted palette: the
+// row's subject is the extraction decision, and a saturated tag would compete
+// with the Extract chip for attention.
+const FINDING_COLORS = {
+  Caries: { bg: '#fee2e2', fg: '#991b1b' },
+  'Periapical lesion': { bg: '#ffedd5', fg: '#9a3412' },
+  'impacted tooth': { bg: '#fef3c7', fg: '#92400e' },
+  'Retained root': { bg: '#ffe4e6', fg: '#9f1239' },
+  'Root Piece': { bg: '#ffe4e6', fg: '#9f1239' },
+};
+const FINDING_FALLBACK = { bg: '#e5e7eb', fg: '#374151' };
 export default function FindingsList({
   detections, extractionIds, onToggle, hoveredId, onHover, disabled,
 }) {
@@ -112,6 +124,29 @@ export default function FindingsList({
                       sx={{ height: 16, fontSize: '0.65rem', bgcolor: 'caries.light', color: '#92400e' }}
                     />
                   )}
+                  {/*
+                    Segmentation findings that overlap this tooth. Spatial
+                    correlation, not a diagnosis — the tooltip says so, and
+                    nothing here ticks the extraction box.
+                  */}
+                  {(det.findings || []).map((f) => {
+                    const c = FINDING_COLORS[f.class_name] || FINDING_FALLBACK;
+                    return (
+                      <Tooltip
+                        key={`${det.id}-${f.class_name}`}
+                        title={`Segmentation model found ${f.class_name} overlapping this tooth (${(f.confidence * 100).toFixed(0)}% confidence). Correlation by position — confirm before acting.`}
+                      >
+                        <Chip
+                          label={f.class_name}
+                          size="small"
+                          sx={{
+                            height: 16, fontSize: '0.65rem',
+                            bgcolor: c.bg, color: c.fg,
+                          }}
+                        />
+                      </Tooltip>
+                    );
+                  })}
                 </Stack>
                 <Typography variant="caption" color="text.secondary" noWrap>
                   {det.quadrant || 'Unknown quadrant'}

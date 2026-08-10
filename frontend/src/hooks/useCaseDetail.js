@@ -91,10 +91,11 @@ export function useCaseDetail({ api = apiClient, xrayId } = {}) {
   /**
    * Sign the case.
    *
+   * Pass EITHER signatureId (a saved signature) OR signature (a drawn data URL).
    * There is no doctorName argument: the signing clinician comes from the
    * authenticated session on the server, so the client cannot claim an identity.
    */
-  const approve = useCallback(async ({ signature }) => {
+  const approve = useCallback(async ({ signature, signatureId }) => {
     if (!caseData) return { ok: false, message: 'No case loaded.' };
     if (!decision) {
       return { ok: false, message: 'Choose a clinical decision.' };
@@ -102,8 +103,11 @@ export function useCaseDetail({ api = apiClient, xrayId } = {}) {
     if (!prescriptionText.trim()) {
       return { ok: false, message: 'Dictate or type a prescription note.' };
     }
-    if (!signature) {
-      return { ok: false, message: 'Please sign before approving.' };
+    if (!signatureId && !signature) {
+      return {
+        ok: false,
+        message: 'Select a saved signature or draw one before signing.',
+      };
     }
     // Mirrors the server rule, so the clinician is told before the round trip.
     if (decision === 'NO_ACTION_NEEDED' && extractionIds.length > 0) {
@@ -119,7 +123,9 @@ export function useCaseDetail({ api = apiClient, xrayId } = {}) {
         xrayId: caseData.id,
         decision,
         prescriptionText,
-        signature,
+        // Send only the one that applies; the server rejects both together.
+        signature: signatureId ? undefined : signature,
+        signatureId: signatureId || undefined,
         extractionIds,
         dictationText: dictationText || undefined,
         reviewedAt: reviewedAt || undefined,
@@ -134,6 +140,36 @@ export function useCaseDetail({ api = apiClient, xrayId } = {}) {
     }
   }, [api, caseData, decision, prescriptionText, extractionIds, dictationText,
       reviewedAt, amendsId, reload]);
+
+  /**
+   * Take the review lock, so a colleague on the shared queue cannot work this
+   * case at the same time. Reloads the case so the panel reflects the new holder.
+   */
+  const claim = useCallback(async () => {
+    if (!caseData) return { ok: false, message: 'No case loaded.' };
+    try {
+      const result = await api.claimXray(caseData.id);
+      await reload();
+      return { ok: true, result };
+    } catch (err) {
+      // A 409 means a colleague won the race. Reload so the panel switches to
+      // showing who holds it rather than leaving a stale "claim" button.
+      if (err.status === 409) await reload();
+      return { ok: false, message: err.message };
+    }
+  }, [api, caseData, reload]);
+
+  /** Give the case back to the shared queue without signing it. */
+  const release = useCallback(async () => {
+    if (!caseData) return { ok: false, message: 'No case loaded.' };
+    try {
+      const result = await api.releaseXray(caseData.id);
+      await reload();
+      return { ok: true, result };
+    } catch (err) {
+      return { ok: false, message: err.message };
+    }
+  }, [api, caseData, reload]);
 
   /** Begin an amendment: the prior record is preserved and marked superseded. */
   const startAmendment = useCallback(() => {
@@ -158,6 +194,10 @@ export function useCaseDetail({ api = apiClient, xrayId } = {}) {
     () => (allDetections || []).filter((d) => d.source === 'hier'),
     [allDetections],
   );
+  const m3Detections = useMemo(
+    () => (allDetections || []).filter((d) => d.source === 'm3'),
+    [allDetections],
+  );
 
   // Findings with a real traced mask, as opposed to a bounding box stored
   // before the segmentation model was installed.
@@ -169,6 +209,10 @@ export function useCaseDetail({ api = apiClient, xrayId } = {}) {
     () => hierDetections.filter((d) => d.is_third_molar).length,
     [hierDetections],
   );
+  const m3ThirdMolars = useMemo(
+    () => m3Detections.filter((d) => d.is_third_molar).length,
+    [m3Detections],
+  );
 
   return {
     caseData, loading, error, errorStatus, saving,
@@ -178,11 +222,16 @@ export function useCaseDetail({ api = apiClient, xrayId } = {}) {
     dictationText, setDictationText,
     amendsId, startAmendment,
     approve, reload,
-    toothDetections, segDetections, hierDetections,
-    maskCount, hierThirdMolars,
+    claim, release,
+    toothDetections, segDetections, hierDetections, m3Detections,
+    maskCount, hierThirdMolars, m3ThirdMolars,
     prescription: caseData?.prescription || null,
     prescriptionHistory: caseData?.prescription_history || [],
     isApproved: caseData?.status === 'APPROVED',
     isPending: caseData?.status === 'PENDING',
+    // Review lock, straight from the server so the panel and the queue agree.
+    claimedByMe: Boolean(caseData?.claimed_by_me),
+    claimedBy: caseData?.claimed_by || null,
+    claimedById: caseData?.claimed_by_id || null,
   };
 }

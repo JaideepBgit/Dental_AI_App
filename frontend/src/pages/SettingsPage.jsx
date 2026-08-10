@@ -11,11 +11,14 @@ import {
 } from '@mui/material';
 
 import { useApi } from '../services/ApiProvider';
+import { useAuth } from '../services/AuthProvider';
 import PageHeader from '../components/PageHeader';
+import SignatureManager from '../components/SignatureManager';
 import { DOCTOR_NAME_KEY } from '../hooks/useDoctorName';
 
 export default function SettingsPage() {
   const api = useApi();
+  const { isOrthodontist } = useAuth();
   const [doctorName, setDoctorName] = useState(
     () => localStorage.getItem(DOCTOR_NAME_KEY) || '',
   );
@@ -57,6 +60,10 @@ export default function SettingsPage() {
             />
           </CardContent>
         </Card>
+
+        {/* Signatures are a clinician's own credential, so this is shown only to
+            the role that signs. An admin has nothing to sign with. */}
+        {isOrthodontist && <SignatureManager />}
 
         <Card>
           <CardContent sx={{ p: 3 }}>

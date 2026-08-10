@@ -6,24 +6,14 @@ import {
 import Mic from '@mui/icons-material/Mic';
 import StopIcon from '@mui/icons-material/Stop';
 import ClearIcon from '@mui/icons-material/Clear';
+import SettingsIcon from '@mui/icons-material/Tune';
 import { useApi } from '../services/ApiProvider';
+import MicPermissionDialog, { micApiAvailable, isSecureOrigin }
+  from './MicPermissionDialog';
 
 const browserSpeechSupported = () =>
   typeof window !== 'undefined' &&
   ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window);
-
-// Browsers expose mediaDevices only in a secure context: https, or http on
-// localhost/127.0.0.1. Over plain http to a LAN IP or hostname the property is
-// undefined rather than merely unpermitted, so recording cannot start at all.
-const micApiAvailable = () =>
-  typeof navigator !== 'undefined' && Boolean(navigator.mediaDevices?.getUserMedia);
-
-const INSECURE_ORIGIN_HELP =
-  `Microphone blocked because this page is served over plain HTTP at `
-  + `"${typeof window !== 'undefined' ? window.location.host : ''}". `
-  + 'Browsers only allow recording on HTTPS or via localhost. '
-  + 'Open the app at http://localhost:8000, or tunnel it: '
-  + 'ssh -L 8000:localhost:8000 <user>@<host>';
 
 /**
  * Dictation with two backends.
@@ -40,6 +30,14 @@ export default function VoiceDictator({ text, setText, whisperReady, disabled })
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [mode, setMode] = useState(null); // 'whisper' | 'browser'
   const [error, setError] = useState(null);
+  // The permission walk-through. Opened instead of showing a dead-end error, so
+  // "the mic is blocked" always comes with a way to fix it.
+  const [micDialogOpen, setMicDialogOpen] = useState(false);
+  // Which input the clinician chose in the dialog. Undefined means browser default.
+  const [micDeviceId, setMicDeviceId] = useState(undefined);
+  // Set once permission has been confirmed this session, so the dialog is not
+  // re-shown before every recording.
+  const [micReady, setMicReady] = useState(false);
 
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
@@ -65,7 +63,12 @@ export default function VoiceDictator({ text, setText, whisperReady, disabled })
   };
 
   const startWhisper = async () => {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // Honour the device picked in the permission dialog. `ideal` rather than
+    // `exact` so a mic unplugged since then falls back to the default instead of
+    // failing the whole recording.
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: micDeviceId ? { deviceId: { ideal: micDeviceId } } : true,
+    });
     streamRef.current = stream;
     chunksRef.current = [];
 
@@ -134,7 +137,8 @@ export default function VoiceDictator({ text, setText, whisperReady, disabled })
     setIsRecording(false);
   };
 
-  const start = async () => {
+  /** Begin capturing, assuming permission is already in hand. */
+  const beginCapture = async () => {
     setError(null);
     // Prefer the server path; only fall back when Whisper genuinely isn't there.
     // Recording also needs the mic API, which an insecure origin withholds.
@@ -144,27 +148,60 @@ export default function VoiceDictator({ text, setText, whisperReady, disabled })
         await startWhisper();
       } else if (browserSpeechSupported()) {
         startBrowser();
-      } else if (!micApiAvailable()) {
-        setError(INSECURE_ORIGIN_HELP);
       } else {
         setError('No dictation available. Install Whisper on the server, or use Chrome/Edge.');
       }
     } catch (err) {
-      // Permission denied, no device, or insecure origin.
       releaseMic();
-      let message;
-      if (!micApiAvailable()) {
-        message = INSECURE_ORIGIN_HELP;
-      } else if (err?.name === 'NotAllowedError') {
-        message = 'Microphone permission denied.';
-      } else if (err?.name === 'NotFoundError') {
-        message = 'No microphone found. Check your input device.';
-      } else {
-        message = `Could not start recording: ${err.message}`;
-      }
-      setError(message);
       setIsRecording(false);
+      // Anything permission-shaped goes back to the dialog, which can actually
+      // explain it, rather than being flattened into a one-line error.
+      if (err?.name === 'NotAllowedError' || err?.name === 'SecurityError'
+          || err?.name === 'NotFoundError') {
+        setMicReady(false);
+        setMicDialogOpen(true);
+        return;
+      }
+      setError(`Could not start recording: ${err.message}`);
     }
+  };
+
+  const start = async () => {
+    setError(null);
+
+    // Nothing to permit on an insecure origin -- getUserMedia does not exist
+    // there. Open the dialog, which explains why and what to do instead.
+    if (!micApiAvailable() || !isSecureOrigin()) {
+      // The browser Web Speech API can still work on some browsers over http,
+      // so try it before declaring dictation impossible.
+      if (browserSpeechSupported()) {
+        try {
+          startBrowser();
+          return;
+        } catch {
+          // fall through to the dialog
+        }
+      }
+      setMicDialogOpen(true);
+      return;
+    }
+
+    // First use in this session: walk through permission, device choice and a
+    // level check before recording anything.
+    if (!micReady) {
+      setMicDialogOpen(true);
+      return;
+    }
+
+    await beginCapture();
+  };
+
+  /** The dialog confirmed access; remember the device and start recording. */
+  const handleMicGranted = async (chosenDeviceId) => {
+    setMicDeviceId(chosenDeviceId);
+    setMicReady(true);
+    setMicDialogOpen(false);
+    await beginCapture();
   };
 
   const busy = isTranscribing || disabled;
@@ -204,6 +241,20 @@ export default function VoiceDictator({ text, setText, whisperReady, disabled })
                 sx={{ color: 'text.secondary' }}
               >
                 <ClearIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          )}
+          {/* Always reachable, so a clinician can switch headsets or re-check the
+              mic without having to hit an error first. */}
+          {!isRecording && (
+            <Tooltip title="Microphone settings">
+              <IconButton
+                size="small"
+                onClick={() => setMicDialogOpen(true)}
+                disabled={busy}
+                sx={{ color: 'text.secondary' }}
+              >
+                <SettingsIcon fontSize="small" />
               </IconButton>
             </Tooltip>
           )}
@@ -249,6 +300,12 @@ export default function VoiceDictator({ text, setText, whisperReady, disabled })
         onChange={(e) => setText(e.target.value)}
         placeholder="Dictate or type the prescription and referral instructions…"
         variant="outlined"
+      />
+
+      <MicPermissionDialog
+        open={micDialogOpen}
+        onClose={() => setMicDialogOpen(false)}
+        onGranted={handleMicGranted}
       />
     </Box>
   );

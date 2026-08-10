@@ -109,6 +109,10 @@ def ingest_file(file_path: str, move_to_archive: bool = True) -> dict:
                     bbox_json=json.dumps(det["bbox"]),
                     polygon_json=json.dumps(det["polygon"]) if det.get("polygon") else None,
                     confidence=det["confidence"],
+                    disease=det.get("disease"),
+                    findings_json=(
+                        json.dumps(det["findings"]) if det.get("findings") else None
+                    ),
                     # impaction/extraction intentionally left unset — the doctor decides.
                 ))
             xray.status = STATUS_PROCESSED

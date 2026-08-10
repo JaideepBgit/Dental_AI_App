@@ -84,7 +84,7 @@ export default function SegmentationViewer({ imageUrl, detections, isAnalyzing, 
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          minHeight: 420,
+          minHeight: { xs: 260, sm: 420 },
           p: { xs: 1.5, md: 2 },
           boxShadow: 'inset 0px 4px 20px rgba(0,0,0,0.3)',
         }}
@@ -142,7 +142,7 @@ export default function SegmentationViewer({ imageUrl, detections, isAnalyzing, 
               sx={{
                 display: 'block',
                 width: '100%',
-                maxHeight: '68vh',
+                maxHeight: { xs: '60dvh', md: '68dvh' },
                 borderRadius: 1,
                 overflow: 'hidden',
               }}
