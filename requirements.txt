@@ -10,6 +10,9 @@ numpy>=1.26.0
 
 # Persistence
 SQLAlchemy>=2.0.0
+# Schema migrations. init_db() runs `upgrade head` at startup, so this is a hard
+# requirement, not a dev-only tool.
+alembic>=1.13.0
 
 # Authentication: password hashing and signed session cookies.
 # bcrypt is pinned below 4.1 because passlib 1.7.4 reads bcrypt.__about__, which

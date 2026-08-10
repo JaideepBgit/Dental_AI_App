@@ -8,6 +8,10 @@ Lifecycle of an X-ray: PENDING -> PROCESSED -> APPROVED
   PENDING    ingested by the watcher, not yet run through the detector
   PROCESSED  detections stored, waiting for a doctor
   APPROVED   doctor signed off, referral PDF written
+
+Schema changes go through Alembic (alembic/versions/). Edit the models here,
+then `alembic revision --autogenerate -m "..."` and review the result -- never
+hand-edit a database. init_db() applies pending revisions on startup.
 """
 
 import os
@@ -105,6 +109,39 @@ class User(Base):
     prescriptions = relationship("Prescription", back_populates="clinician")
     assigned_xrays = relationship("XRay", foreign_keys="XRay.assigned_to_id",
                                   back_populates="assigned_to")
+    signatures = relationship("Signature", back_populates="owner",
+                              cascade="all, delete-orphan")
+
+
+class Signature(Base):
+    """
+    A stored e-signature a clinician can reuse instead of re-drawing at every
+    sign-off.
+
+    A doctor may keep several -- a full legal signature, initials, one with
+    credentials -- and picks per case, so this is a child table rather than a
+    column on User. Exactly one may be `is_default`, which is the one the
+    sign-off panel preloads.
+
+    Deleting a signature only removes it from the picker. Prescription rows keep
+    their own copy of the signature image at `Prescription.signature_path`, so a
+    signed record never loses the mark it was signed with.
+    """
+    __tablename__ = "signatures"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+
+    label = Column(String(60), nullable=False)
+    file_path = Column(String(500), nullable=False)
+    # 'upload' (image file) or 'drawn' (captured from the canvas). Kept for the
+    # audit trail: how a signature entered the system is a compliance question.
+    source = Column(String(10), nullable=False, default="upload")
+
+    is_default = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+
+    owner = relationship("User", back_populates="signatures")
 
 
 class Prescription(Base):
@@ -197,17 +234,26 @@ class XRay(Base):
     processed_at = Column(DateTime, nullable=True)
     error_message = Column(Text, nullable=True)
 
-    # Which orthodontist is responsible for this case. NULL means unassigned:
-    # the case sits in the admin's pool and appears in no doctor's queue, so work
-    # is never silently invisible to everyone.
+    # Optional admin override. NULL is the normal case: an unassigned case is
+    # visible to every orthodontist in the shared queue and worked by whoever
+    # claims it. When an admin does assign a case, it is directed to that one
+    # doctor and drops out of everybody else's queue.
     assigned_to_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     assigned_at = Column(DateTime, nullable=True)
     assigned_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    # Review lock. A doctor claims a case to work it; while held, colleagues see
+    # it as under review and cannot open or sign it. Released explicitly by the
+    # holder, automatically on sign-off, or force-released by an admin -- there is
+    # no time-based expiry, so a claim never lapses under a doctor mid-review.
+    claimed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    claimed_at = Column(DateTime, nullable=True)
 
     patient = relationship("Patient", back_populates="xrays")
     assigned_to = relationship("User", foreign_keys=[assigned_to_id],
                                back_populates="assigned_xrays")
     assigned_by = relationship("User", foreign_keys=[assigned_by_id])
+    claimed_by = relationship("User", foreign_keys=[claimed_by_id])
     detections = relationship("Detection", back_populates="xray", cascade="all, delete-orphan")
     referrals = relationship("ReferralSlip", back_populates="xray", cascade="all, delete-orphan")
     prescriptions = relationship("Prescription", back_populates="xray", cascade="all, delete-orphan")
@@ -236,6 +282,12 @@ class Detection(Base):
     # Pathology token from a hierarchical class name, e.g. 'deep caries'.
     # Model output for display; never drives needs_extraction.
     disease = Column(String(50), nullable=True)
+    # Seg-model findings overlapping this tooth's box, as JSON:
+    # [{"class_name": "Caries", "confidence": 0.82, "containment": 0.91}, ...].
+    # Produced by joining the seg model's output onto tooth boxes spatially, so
+    # a tooth row can name its own pathology. Correlation, not diagnosis — like
+    # `disease`, it is display-only and never drives needs_extraction.
+    findings_json = Column(Text, nullable=True)
     fdi_number = Column(String(10), nullable=True)    # e.g. '38'
     universal_number = Column(String(10), nullable=True)  # e.g. '17'
     quadrant = Column(String(30), nullable=True)      # Upper-Right, Lower-Left, ...
@@ -267,59 +319,73 @@ class ReferralSlip(Base):
     xray = relationship("XRay", back_populates="referrals")
 
 
+# The revision that captures the schema as it was just before Alembic was
+# introduced. A database created by the old create_all() path is at exactly this
+# point without knowing it, so it gets stamped here rather than upgraded -- see
+# _stamp_legacy_database().
+_BASELINE_REVISION = "2a9de32687b8"
+
+ALEMBIC_INI = os.path.join(BASE_DIR, "alembic.ini")
+
+
+def _alembic_config():
+    """Alembic config pointed at this package, whatever the working directory.
+
+    The app is started from systemd, Docker and the repo root at different
+    times; resolving script_location relative to this file keeps all three
+    working.
+    """
+    from alembic.config import Config
+
+    cfg = Config(ALEMBIC_INI)
+    cfg.set_main_option("script_location", os.path.join(BASE_DIR, "alembic"))
+    # env.py reads the URL from this module, so nothing to set here.
+    return cfg
+
+
+def _stamp_legacy_database(connection) -> bool:
+    """Mark a pre-Alembic database as being at the baseline revision.
+
+    Databases built by the old create_all() path have every baseline table but
+    no alembic_version row. Running `upgrade` on one would fail at the first
+    CREATE TABLE, so it is stamped instead and only later revisions apply.
+
+    Returns True if a stamp was written.
+    """
+    from alembic.migration import MigrationContext
+    from sqlalchemy import inspect
+
+    context = MigrationContext.configure(connection)
+    if context.get_current_revision() is not None:
+        return False  # Already under Alembic control.
+
+    tables = set(inspect(connection).get_table_names())
+    if "users" not in tables:
+        return False  # Genuinely empty; upgrade will build it from scratch.
+
+    from alembic.script import ScriptDirectory
+    script = ScriptDirectory.from_config(_alembic_config())
+    context.stamp(script, _BASELINE_REVISION)
+    print(f"[db] existing schema detected; stamped as {_BASELINE_REVISION}")
+    return True
+
+
 def init_db() -> None:
-    Base.metadata.create_all(bind=engine)
-    _add_missing_columns()
+    """Bring the database up to the latest revision.
 
+    Replaces the old create_all() + hand-rolled ALTER TABLE pair. Alembic owns
+    the schema now, which is why this can add indexes and foreign keys -- things
+    ALTER TABLE ADD COLUMN could never do, and which the legacy path silently
+    skipped (see revision 1d1fe49baabb).
 
-def _add_missing_columns() -> None:
+    Safe to run on every boot: it is a no-op once the database is at head.
     """
-    Additive migration for columns introduced after a database was created.
+    from alembic import command
 
-    create_all() only ever creates missing *tables*, so an existing detections
-    table would keep its old shape and every query naming a new column would
-    fail. There is no Alembic in this project; ALTER TABLE ADD COLUMN is
-    supported by both SQLite and Postgres and is safe to re-run.
-    """
-    from sqlalchemy import inspect, text
+    with engine.begin() as connection:
+        _stamp_legacy_database(connection)
 
-    inspector = inspect(engine)
-    tables = set(inspector.get_table_names())
-
-    # SQLite accepts DATETIME; Postgres does not. Emit the right spelling for
-    # whichever backend is attached, so an existing RDS database can be migrated
-    # rather than only a freshly created one.
-    timestamp_type = "DATETIME" if _IS_SQLITE else "TIMESTAMP"
-
-    # Table -> {column: ALTER TABLE type/constraint clause}. Each is added only
-    # when absent, so this stays correct whichever version created the database.
-    additive = {
-        "detections": {
-            "source": "VARCHAR(10) NOT NULL DEFAULT 'detect'",
-            "disease": "VARCHAR(50)",
-        },
-        "referral_slips": {
-            # Links a slip back to the signed decision that produced it.
-            "prescription_id": "INTEGER",
-        },
-        "xrays": {
-            # Case ownership: which orthodontist must work this case.
-            "assigned_to_id": "INTEGER",
-            "assigned_at": timestamp_type,
-            "assigned_by_id": "INTEGER",
-        },
-    }
-
-    for table, columns in additive.items():
-        if table not in tables:
-            continue
-        existing = {c["name"] for c in inspector.get_columns(table)}
-        for column, clause in columns.items():
-            if column in existing:
-                continue
-            with engine.begin() as conn:
-                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {clause}"))
-            print(f"[db] migrated: {table}.{column} added")
+    command.upgrade(_alembic_config(), "head")
 
 
 def get_db_session() -> Generator[Session, None, None]:
@@ -332,4 +398,4 @@ def get_db_session() -> Generator[Session, None, None]:
 
 if __name__ == "__main__":
     init_db()
-    print(f"[db] Schema initialised at {DB_FILE}")
+    print(f"[db] Schema at head for {DATABASE_URL}")

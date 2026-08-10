@@ -1,0 +1,41 @@
+Database migrations for the SmileAI portal.
+
+init_db() in db.py runs `alembic upgrade head` on every backend start, so a
+deploy needs no separate migration step -- restarting the app is enough.
+
+Revisions
+---------
+2a9de32687b8  baseline schema -- every table as it stood when Alembic was added
+1d1fe49baabb  the FKs and indexes the old ALTER TABLE path could never create
+
+Adding a migration
+------------------
+Edit the models in db.py, then:
+
+    alembic revision --autogenerate -m "what changed"
+
+Read the generated file before committing it. Autogenerate cannot see a rename:
+it emits a drop plus an add, which throws away the column's data. Rewrite those
+as op.alter_column(..., new_column_name=...) by hand.
+
+Existing databases
+------------------
+A database created before Alembic existed has no alembic_version row.
+_stamp_legacy_database() in db.py detects that, stamps it at the baseline, and
+lets only the later revisions run -- nothing is rebuilt. This happens
+automatically; there is no manual step for the AWS deploy.
+
+SQLite vs Postgres
+------------------
+env.py sets render_as_batch for SQLite because SQLite cannot ALTER a column in
+place; batch mode rebuilds the table by copy-and-swap. Postgres runs the
+statements directly. Name every constraint explicitly -- an unnamed one works
+under batch mode and then fails on RDS.
+
+Useful commands
+---------------
+    alembic current              # where this database is
+    alembic history --verbose    # the whole chain
+    alembic check                # models vs database: undeclared drift?
+    alembic downgrade -1         # step back one revision
+    alembic upgrade head --sql   # print SQL instead of applying it

@@ -56,6 +56,12 @@ RUN python -c "import os, whisper; whisper.load_model(os.environ['SMILEAI_WHISPE
 COPY main.py db.py auth.py seed_users.py inference.py annotator.py referral.py watcher.py ./
 COPY models/ ./models/
 
+# Migrations. init_db() runs `alembic upgrade head` at startup, so the container
+# cannot boot without these -- the whole COPY list here is explicit, and a
+# missing alembic/ would only surface as a crash on the first start.
+COPY alembic.ini ./
+COPY alembic/ ./alembic/
+
 COPY --from=frontend /build/dist ./frontend/dist
 
 ENV DATA_DIR=/data
