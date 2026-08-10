@@ -58,11 +58,38 @@ def _existing_fks(table: str) -> set:
     return {fk["name"] for fk in inspector.get_foreign_keys(table)}
 
 
+def _existing_columns(table: str) -> set:
+    if context.is_offline_mode():
+        return set()
+    inspector = sa.inspect(op.get_bind())
+    return {c["name"] for c in inspector.get_columns(table)}
+
+
 def upgrade() -> None:
     """Add the constraints and indexes the ALTER TABLE path could not create."""
     # op.get_bind() returns a MockConnection under `alembic upgrade --sql`, so
     # read the dialect from the migration context, which works in both modes.
     is_sqlite = context.get_context().dialect.name == "sqlite"
+    timestamp_type = sa.DateTime()
+
+    # How far the legacy ALTER TABLE path actually got varies by deployment: it
+    # only ever added a column when that version of db.py knew about it. The
+    # production database was last touched before the review lock existed, so it
+    # has assigned_* but not claimed_*, while a developer's database has both.
+    # Add whatever is absent before indexing it -- an index on a missing column
+    # is what took the app down on the first deploy of this revision.
+    xray_columns = _existing_columns("xrays")
+    for column, coltype in (("assigned_to_id", sa.Integer()),
+                            ("assigned_at", timestamp_type),
+                            ("assigned_by_id", sa.Integer()),
+                            ("claimed_by_id", sa.Integer()),
+                            ("claimed_at", timestamp_type)):
+        if column not in xray_columns:
+            op.add_column("xrays", sa.Column(column, coltype, nullable=True))
+
+    if "prescription_id" not in _existing_columns("referral_slips"):
+        op.add_column("referral_slips",
+                      sa.Column("prescription_id", sa.Integer(), nullable=True))
 
     xray_indexes = _existing_indexes("xrays")
 

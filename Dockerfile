@@ -51,9 +51,12 @@ RUN pip install --no-cache-dir -r requirements.txt psycopg2-binary
 ENV SMILEAI_WHISPER_MODEL=base
 RUN python -c "import os, whisper; whisper.load_model(os.environ['SMILEAI_WHISPER_MODEL'])"
 
-# auth.py is imported by main.py; seed_users.py is run once after first deploy
-# to create the admin account, so it has to be in the image too.
-COPY main.py db.py auth.py seed_users.py inference.py annotator.py referral.py watcher.py ./
+# Every top-level module, not a hand-maintained list. Naming them individually
+# meant each new module was one forgotten line away from a container that builds
+# clean and then crash-loops on ModuleNotFoundError -- which is exactly how
+# branding.py shipped broken. .dockerignore already excludes tests, the local
+# SQLite file and runtime output.
+COPY *.py ./
 COPY models/ ./models/
 
 # Migrations. init_db() runs `alembic upgrade head` at startup, so the container

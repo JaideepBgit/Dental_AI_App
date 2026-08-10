@@ -7,8 +7,16 @@ __pycache__/
 .venv/
 
 # Local SQLite DB -- Postgres is the source of truth in AWS, and copying this
-# would bake patient records into the image layers.
+# would bake patient records into the image layers. Globbed so backups and
+# sidecars (smileai.db.bak_preauth, -wal, -shm) are covered too; a bare "*.db"
+# left those to be picked up by `COPY *.py`-style broad copies.
 *.db
+*.db.*
+
+# Tests are not part of the runtime image. They also import pytest, which is not
+# installed in the app stage.
+tests/
+signatures/
 
 # Runtime output; these live on the mounted volume at /data.
 xray_store/

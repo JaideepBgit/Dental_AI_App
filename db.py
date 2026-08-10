@@ -346,9 +346,16 @@ def _alembic_config():
 def _stamp_legacy_database(connection) -> bool:
     """Mark a pre-Alembic database as being at the baseline revision.
 
-    Databases built by the old create_all() path have every baseline table but
+    Databases built by the old create_all() path have most baseline tables but
     no alembic_version row. Running `upgrade` on one would fail at the first
     CREATE TABLE, so it is stamped instead and only later revisions apply.
+
+    Stamping skips the baseline, so any table the legacy database never had --
+    `signatures` on a deployment that predates reusable e-signatures -- would
+    never be created by any revision. create_all() fills exactly those gaps: it
+    only issues CREATE TABLE for tables that are absent and leaves existing ones
+    untouched. Columns missing from tables that DO exist are not its problem;
+    the revisions guard for those individually.
 
     Returns True if a stamp was written.
     """
@@ -362,6 +369,12 @@ def _stamp_legacy_database(connection) -> bool:
     tables = set(inspect(connection).get_table_names())
     if "users" not in tables:
         return False  # Genuinely empty; upgrade will build it from scratch.
+
+    missing = {t for t in Base.metadata.tables if t not in tables}
+    if missing:
+        Base.metadata.create_all(bind=connection, checkfirst=True)
+        print(f"[db] created tables absent from the legacy schema: "
+              f"{sorted(missing)}")
 
     from alembic.script import ScriptDirectory
     script = ScriptDirectory.from_config(_alembic_config())

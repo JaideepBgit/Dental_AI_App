@@ -114,6 +114,80 @@ def test_legacy_database_is_stamped_not_rebuilt(db_module):
     assert [r[0] for r in rows] == ["MRN-1"], "existing data must survive"
 
 
+def test_legacy_database_missing_newer_columns_and_tables(db_module):
+    """A legacy database that predates whole features must still upgrade.
+
+    How far the old ALTER TABLE path got varies by deployment. Production was
+    last migrated before reusable e-signatures and the review lock existed, so
+    it had no `signatures` table and no xrays.claimed_* columns -- while a
+    developer's database had both. The first deploy of revision 1d1fe49baabb
+    crash-looped on `CREATE INDEX ... (claimed_by_id)` because the migration
+    assumed the column was merely missing its index.
+
+    Stamping skips the baseline, so a table the legacy schema never had would
+    otherwise never be created by any revision.
+    """
+    db_module.Base.metadata.create_all(bind=db_module.engine)
+    with db_module.engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
+        conn.execute(text("DROP TABLE IF EXISTS signatures"))
+        # SQLite refuses to DROP a column named in a foreign key, so rebuild
+        # xrays without the review-lock columns rather than altering it.
+        conn.execute(text("DROP TABLE xrays"))
+        conn.execute(text(
+            "CREATE TABLE xrays ("
+            " id INTEGER NOT NULL PRIMARY KEY,"
+            " patient_id INTEGER REFERENCES patients(id),"
+            " original_filename VARCHAR(255) NOT NULL,"
+            " file_path VARCHAR(500) NOT NULL,"
+            " status VARCHAR(20) NOT NULL,"
+            " image_width INTEGER, image_height INTEGER,"
+            " appointment_date DATETIME, uploaded_at DATETIME,"
+            " processed_at DATETIME, error_message TEXT,"
+            # assigned_* exist (the old path added them); claimed_* do not.
+            " assigned_to_id INTEGER, assigned_at DATETIME,"
+            " assigned_by_id INTEGER)"))
+        conn.execute(text(
+            "INSERT INTO patients (id, mrn, name) VALUES (1, 'MRN-1', 'Test')"))
+
+    db_module.init_db()
+
+    insp = inspect(db_module.engine)
+    assert "signatures" in insp.get_table_names()
+    xray_columns = {c["name"] for c in insp.get_columns("xrays")}
+    assert {"claimed_by_id", "claimed_at"} <= xray_columns
+    assert _revision(db_module.engine) == _head(db_module)
+
+    with db_module.engine.connect() as conn:
+        rows = conn.execute(text("SELECT mrn FROM patients")).fetchall()
+    assert [r[0] for r in rows] == ["MRN-1"]
+
+
+def test_already_stamped_database_still_gets_signatures(db_module):
+    """A database stamped by an earlier deploy must still gain `signatures`.
+
+    _stamp_legacy_database() creates tables the legacy schema never had, but it
+    only runs the first time a database is adopted. Production had already been
+    stamped by a previous deploy, so on the next boot that path short-circuited
+    and `signatures` stayed missing -- while /api/health reported OK, because
+    nothing touches the table at startup. Revision 4b8d2c5e7a91 repairs it from
+    inside the migration chain, which applies regardless of adoption history.
+    """
+    db_module.init_db()
+    with db_module.engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS signatures"))
+        # Rewind only the signatures revision; the rest of the chain stays.
+        conn.execute(text(
+            "UPDATE alembic_version SET version_num = '3c7e1a2b9f04'"))
+
+    assert "signatures" not in inspect(db_module.engine).get_table_names()
+
+    db_module.init_db()
+
+    assert "signatures" in inspect(db_module.engine).get_table_names()
+    assert _revision(db_module.engine) == _head(db_module)
+
+
 def test_legacy_upgrade_adds_missing_indexes(db_module):
     """Revision 1d1fe49baabb backfills what ALTER TABLE ADD COLUMN could not."""
     db_module.Base.metadata.create_all(bind=db_module.engine)
